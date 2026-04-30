@@ -557,7 +557,7 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "sync_global_instructions",
-            description: "Triggers a background sync of the latest global agent instructions from the Pink Sundew server and writes them to local IDE instruction files (.cursor/rules/*.mdc, CLAUDE.md, AGENTS.md, antigravity.md, .github/copilot-instructions.md). Call this to refresh instructions mid-session without restarting the MCP server.",
+            description: "Triggers a background sync of the latest global agent instructions from the Pink Sundew server and writes them to local IDE instruction files (.cursor/rules/*.mdc, .windsurf/rules/*.md, CLAUDE.md, AGENTS.md, antigravity.md, .github/copilot-instructions.md, .github/instructions/*.instructions.md). Call this to refresh instructions mid-session without restarting the MCP server.",
             input_schema: json!({"type":"object","properties":{}}),
         },
     ]

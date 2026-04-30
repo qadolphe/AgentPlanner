@@ -50,6 +50,7 @@ const MCP_CLIENT_ICONS: Record<DashboardMcpClientId, IconComponent> = {
   'claude-code': CLIENT_LOGOS['claude-code'],
   antigravity: CLIENT_LOGOS.antigravity,
   vscode: CLIENT_LOGOS.vscode,
+  windsurf: CLIENT_LOGOS.windsurf,
 }
 
 function formatStatusTime(value: string | null | undefined) {

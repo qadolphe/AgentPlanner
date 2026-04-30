@@ -1,20 +1,22 @@
-export const CURSOR_RULE_MODES = ['always', 'agent-requested', 'auto-attached'] as const
+export const INSTRUCTION_ROUTING_MODES = ['always', 'match-files', 'agent-decides'] as const
 
-export type CursorRuleMode = (typeof CURSOR_RULE_MODES)[number]
+export type InstructionRoutingMode = (typeof INSTRUCTION_ROUTING_MODES)[number]
 
-export type CursorRuleConfig = {
-  mode: CursorRuleMode
+export type InstructionRoutingConfig = {
+  title: string
+  mode: InstructionRoutingMode
   description: string
   globs: string
 }
 
-export type ParsedCursorRuleDocument = {
+export type ParsedInstructionDocument = {
   body: string
-  config: CursorRuleConfig
+  config: InstructionRoutingConfig
 }
 
 const FRONTMATTER_START = '---\n'
 const FRONTMATTER_END = '\n---\n'
+const DEFAULT_TITLE = 'Untitled Instruction'
 
 function splitFrontmatter(source: string) {
   const normalized = source.replace(/\r\n/g, '\n')
@@ -66,7 +68,7 @@ function normalizeGlobs(globs: string) {
     .join(', ')
 }
 
-function humanizeRuleName(rawValue: string) {
+function humanizeTitle(rawValue: string) {
   const normalized = rawValue
     .trim()
     .replace(/\.[^.]+$/u, '')
@@ -74,27 +76,33 @@ function humanizeRuleName(rawValue: string) {
     .replace(/\s+/g, ' ')
 
   if (!normalized) {
-    return 'this instruction file'
+    return DEFAULT_TITLE
   }
 
   return normalized.replace(/\b\w/g, (character) => character.toUpperCase())
 }
 
-export function buildDefaultCursorRuleDescription(ruleName: string) {
-  return `Use when working with ${humanizeRuleName(ruleName)}.`
+export function buildInstructionTitle(rawValue: string) {
+  return humanizeTitle(rawValue)
 }
 
-export function parseCursorRuleDocument(
+export function buildDefaultInstructionDescription(title: string) {
+  return `Use when working with ${title.trim() || DEFAULT_TITLE}.`
+}
+
+export function parseInstructionRoutingDocument(
   source: string,
-  options?: { defaultDescription?: string }
-): ParsedCursorRuleDocument {
-  const defaultDescription = options?.defaultDescription ?? ''
+  options?: { defaultTitle?: string; defaultDescription?: string }
+): ParsedInstructionDocument {
+  const defaultTitle = options?.defaultTitle?.trim() || DEFAULT_TITLE
+  const defaultDescription = options?.defaultDescription?.trim() || ''
   const frontmatter = splitFrontmatter(source)
 
   if (!frontmatter) {
     return {
       body: source,
       config: {
+        title: defaultTitle,
         mode: 'always',
         description: defaultDescription,
         globs: '',
@@ -102,8 +110,10 @@ export function parseCursorRuleDocument(
     }
   }
 
+  let title = defaultTitle
   let description = defaultDescription
   let globs = ''
+  let routingMode: InstructionRoutingMode | null = null
   let alwaysApply = false
 
   for (const line of frontmatter.frontmatter.split('\n')) {
@@ -115,6 +125,11 @@ export function parseCursorRuleDocument(
     const key = line.slice(0, separatorIndex).trim()
     const value = line.slice(separatorIndex + 1)
 
+    if (key === 'title') {
+      title = parseFrontmatterString(value) || defaultTitle
+      continue
+    }
+
     if (key === 'description') {
       description = parseFrontmatterString(value)
       continue
@@ -125,22 +140,27 @@ export function parseCursorRuleDocument(
       continue
     }
 
+    if (key === 'routingMode') {
+      const parsedMode = parseFrontmatterString(value) as InstructionRoutingMode
+      if (INSTRUCTION_ROUTING_MODES.includes(parsedMode)) {
+        routingMode = parsedMode
+      }
+      continue
+    }
+
     if (key === 'alwaysApply') {
       alwaysApply = value.trim() === 'true'
     }
   }
 
-  const mode: CursorRuleMode = alwaysApply
-    ? 'always'
-    : globs
-      ? 'auto-attached'
-      : description
-        ? 'agent-requested'
-        : 'always'
+  const mode: InstructionRoutingMode =
+    routingMode ??
+    (alwaysApply ? 'always' : globs ? 'match-files' : description ? 'agent-decides' : 'always')
 
   return {
     body: frontmatter.body.replace(/^\n+/, ''),
     config: {
+      title,
       mode,
       description,
       globs,
@@ -148,19 +168,23 @@ export function parseCursorRuleDocument(
   }
 }
 
-export function serializeCursorRuleDocument(
+export function serializeInstructionRoutingDocument(
   body: string,
-  config: CursorRuleConfig
+  config: InstructionRoutingConfig
 ) {
-  const normalizedGlobs = config.mode === 'auto-attached' ? normalizeGlobs(config.globs) : ''
+  const normalizedTitle = config.title.trim() || DEFAULT_TITLE
+  const normalizedMode = config.mode
   const normalizedDescription =
-    config.mode === 'agent-requested' ? config.description.trim() : ''
+    normalizedMode === 'agent-decides' ? config.description.trim() : ''
+  const normalizedGlobs =
+    normalizedMode === 'match-files' ? normalizeGlobs(config.globs) : ''
 
   const lines = [
     '---',
+    `title: ${JSON.stringify(normalizedTitle)}`,
+    `routingMode: ${JSON.stringify(normalizedMode)}`,
     `description: ${JSON.stringify(normalizedDescription)}`,
     `globs: ${JSON.stringify(normalizedGlobs)}`,
-    `alwaysApply: ${config.mode === 'always' ? 'true' : 'false'}`,
     '---',
     '',
     body.trim(),

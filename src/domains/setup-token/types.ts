@@ -4,6 +4,7 @@ export const SETUP_CLIENTS = [
   'claude-code',
   'antigravity',
   'vscode',
+  'windsurf',
 ] as const
 
 export type SetupClient = (typeof SETUP_CLIENTS)[number]
@@ -14,6 +15,7 @@ const SETUP_CLIENT_LABELS: Record<SetupClient, string> = {
   'claude-code': 'Claude Code',
   antigravity: 'Antigravity',
   vscode: 'VS Code',
+  windsurf: 'Windsurf',
 }
 
 export function isSetupClient(value: unknown): value is SetupClient {

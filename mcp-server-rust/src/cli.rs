@@ -105,6 +105,7 @@ pub enum Client {
     ClaudeCode,
     Antigravity,
     Vscode,
+    Windsurf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,6 +338,10 @@ async fn status() -> Result<()> {
         "  VS Code: {}",
         yes_no(is_registered(Client::Vscode, &cwd).unwrap_or(false))
     );
+    eprintln!(
+        "  Windsurf: {}",
+        yes_no(is_registered(Client::Windsurf, &cwd).unwrap_or(false))
+    );
     let mcp_json_registered = is_project_mcp_json_registered(&cwd).unwrap_or(false);
     eprintln!("  Claude Code: {}", yes_no(mcp_json_registered));
     eprintln!("  Antigravity: {}", yes_no(mcp_json_registered));
@@ -456,6 +461,7 @@ fn resolve_target_file(
         Client::Codex => resolve_codex_config_path(),
         Client::Cursor => Ok(cwd.join(".cursor").join("mcp.json")),
         Client::Vscode => Ok(cwd.join(".vscode").join("mcp.json")),
+        Client::Windsurf => resolve_windsurf_config_path(),
         Client::ClaudeCode | Client::Antigravity => Ok(cwd.join(".mcp.json")),
     }
 }
@@ -473,6 +479,13 @@ fn resolve_codex_config_path() -> Result<PathBuf> {
     }
 
     bail!("Unable to determine codex config location. Provide --file explicitly.")
+}
+
+fn resolve_windsurf_config_path() -> Result<PathBuf> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| anyhow!("Unable to determine Windsurf config location. Provide --file explicitly."))?;
+
+    Ok(home.join(".codeium").join("windsurf").join("mcp_config.json"))
 }
 
 fn resolve_command_tuple() -> Result<CommandTuple> {
@@ -561,7 +574,7 @@ fn render_config(
     match config.client {
         Client::Codex => render_codex_config(config, existing),
         Client::Vscode => render_vscode_config(config, existing),
-        Client::Cursor | Client::ClaudeCode | Client::Antigravity => {
+        Client::Cursor | Client::ClaudeCode | Client::Antigravity | Client::Windsurf => {
             render_mcp_json_config(config, existing)
         }
     }
@@ -929,6 +942,7 @@ fn prompt_clients() -> Result<Vec<Client>> {
         Client::ClaudeCode,
         Client::Antigravity,
         Client::Vscode,
+        Client::Windsurf,
     ];
     eprintln!("Which client(s) do you want to set up?");
     for (index, client) in clients.iter().enumerate() {
@@ -1122,6 +1136,7 @@ fn is_registered(client: Client, cwd: &Path) -> Result<bool> {
         Client::Codex => config_contains(resolve_codex_config_path()?, "pinksundew"),
         Client::Cursor => config_contains(cwd.join(".cursor").join("mcp.json"), "pinksundew"),
         Client::Vscode => config_contains(cwd.join(".vscode").join("mcp.json"), "pinksundew"),
+        Client::Windsurf => config_contains(resolve_windsurf_config_path()?, "pinksundew"),
         Client::ClaudeCode | Client::Antigravity => is_project_mcp_json_registered(cwd),
     }
 }
@@ -1148,6 +1163,7 @@ fn sync_target_for_client(client: Client) -> &'static str {
         Client::ClaudeCode => "sync_target_claude",
         Client::Antigravity => "sync_target_antigravity",
         Client::Vscode => "sync_target_vscode",
+        Client::Windsurf => "sync_target_windsurf",
     }
 }
 
@@ -1158,6 +1174,7 @@ fn client_slug(client: Client) -> &'static str {
         Client::ClaudeCode => "claude-code",
         Client::Antigravity => "antigravity",
         Client::Vscode => "vscode",
+        Client::Windsurf => "windsurf",
     }
 }
 
@@ -1172,6 +1189,7 @@ fn client_label_title(client: Client) -> &'static str {
         Client::ClaudeCode => "Claude Code",
         Client::Antigravity => "Antigravity",
         Client::Vscode => "VS Code",
+        Client::Windsurf => "Windsurf",
     }
 }
 

@@ -6,7 +6,7 @@ use crate::resources::ResourceService;
 use anyhow::Result;
 use chrono::Utc;
 use futures::FutureExt;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,33 +17,45 @@ use tracing::{error, info, warn};
 
 const SYNC_START: &str = "<!-- BEGIN:pinksundew-sync -->";
 const SYNC_END: &str = "<!-- END:pinksundew-sync -->";
-const SYNC_TARGET_TOGGLES: [(&str, &str); 5] = [
-    ("sync_target_claude", "CLAUDE.md"),
-    ("sync_target_windsurf", ".windsurfrules"),
-    ("sync_target_vscode", ".github/copilot-instructions.md"),
-    ("sync_target_codex", "AGENTS.md"),
-    ("sync_target_antigravity", "antigravity.md"),
-];
 const CURSOR_SYNC_TARGET_TOGGLE: &str = "sync_target_cursor";
+const WINDSURF_SYNC_TARGET_TOGGLE: &str = "sync_target_windsurf";
+const VSCODE_SYNC_TARGET_TOGGLE: &str = "sync_target_vscode";
+const CODEX_SYNC_TARGET_TOGGLE: &str = "sync_target_codex";
+const CLAUDE_SYNC_TARGET_TOGGLE: &str = "sync_target_claude";
+const ANTIGRAVITY_SYNC_TARGET_TOGGLE: &str = "sync_target_antigravity";
 const CURSOR_RULES_DIR: &str = ".cursor/rules";
 const CURSOR_RULES_DISPLAY_PATH: &str = ".cursor/rules/*.mdc";
 const CURSOR_GLOBAL_RULE_FILE: &str = ".cursor/rules/pinksundew-global.mdc";
 const CURSOR_MANAGED_RULE_PREFIX: &str = "pinksundew-";
 const LEGACY_CURSOR_RULE_FILE: &str = ".cursorrules";
+const WINDSURF_RULES_DIR: &str = ".windsurf/rules";
+const WINDSURF_RULES_DISPLAY_PATH: &str = ".windsurf/rules/*.md";
+const WINDSURF_GLOBAL_RULE_FILE: &str = ".windsurf/rules/pinksundew-global.md";
+const WINDSURF_MANAGED_RULE_PREFIX: &str = "pinksundew-";
+const LEGACY_WINDSURF_RULE_FILE: &str = ".windsurfrules";
+const COPILOT_ROOT_FILE: &str = ".github/copilot-instructions.md";
+const COPILOT_INSTRUCTIONS_DIR: &str = ".github/instructions";
+const COPILOT_INSTRUCTIONS_DISPLAY_PATH: &str = ".github/instructions/*.instructions.md";
+const COPILOT_MANAGED_RULE_PREFIX: &str = "pinksundew-";
+const CODEX_ROOT_FILE: &str = "AGENTS.md";
+const CLAUDE_ROOT_FILE: &str = "CLAUDE.md";
+const ANTIGRAVITY_ROOT_FILE: &str = "antigravity.md";
 const CONTEXT_DOCS_DIR: &str = ".pinksundew/docs/";
 const CONTEXT_DOCS_NOTE: &str =
     "Project context documents live in .pinksundew/docs/. Read them before making architectural changes.";
+const CONDITIONAL_DOCS_HEADING: &str = "Conditional Pink Sundew Instruction Docs";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum CursorRuleMode {
+enum InstructionRoutingMode {
     Always,
-    AgentRequested,
-    AutoAttached,
+    MatchFiles,
+    AgentDecides,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CursorRuleMetadata {
-    mode: CursorRuleMode,
+struct InstructionRoutingMetadata {
+    title: String,
+    mode: InstructionRoutingMode,
     description: String,
     globs: String,
 }
@@ -51,13 +63,30 @@ struct CursorRuleMetadata {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedInstructionDocument {
     body: String,
-    cursor: CursorRuleMetadata,
+    routing: InstructionRoutingMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct GeneratedCursorRuleFile {
+struct CustomInstructionDocument {
+    relative_path: String,
+    body: String,
+    routing: InstructionRoutingMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GeneratedTextFile {
     relative_path: String,
     content: String,
+}
+
+#[expect(
+    dead_code,
+    reason = "reference-only manifests remain available for follow-up env integrations"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManifestStyle {
+    ReferenceOnly,
+    InlineAlwaysWithConditionalManifest,
 }
 
 #[derive(Clone)]
@@ -80,30 +109,89 @@ impl SyncService {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
         let project_id = self.scope.project_id().to_string();
-        let (board_targets, cursor_target_enabled) =
-            match self.resources.get_project_agent_controls(&project_id).await {
-            Ok(controls) => (
-                resolve_board_target_files(&controls.tool_toggles),
-                controls
+        let (
+            claude_target_enabled,
+            windsurf_target_enabled,
+            vscode_target_enabled,
+            codex_target_enabled,
+            antigravity_target_enabled,
+            cursor_target_enabled,
+            output_files,
+        ) = match self.resources.get_project_agent_controls(&project_id).await {
+            Ok(controls) => {
+                let claude_target_enabled = controls
+                    .tool_toggles
+                    .get(CLAUDE_SYNC_TARGET_TOGGLE)
+                    .copied()
+                    .unwrap_or(false);
+                let windsurf_target_enabled = controls
+                    .tool_toggles
+                    .get(WINDSURF_SYNC_TARGET_TOGGLE)
+                    .copied()
+                    .unwrap_or(false);
+                let vscode_target_enabled = controls
+                    .tool_toggles
+                    .get(VSCODE_SYNC_TARGET_TOGGLE)
+                    .copied()
+                    .unwrap_or(false);
+                let codex_target_enabled = controls
+                    .tool_toggles
+                    .get(CODEX_SYNC_TARGET_TOGGLE)
+                    .copied()
+                    .unwrap_or(false);
+                let antigravity_target_enabled = controls
+                    .tool_toggles
+                    .get(ANTIGRAVITY_SYNC_TARGET_TOGGLE)
+                    .copied()
+                    .unwrap_or(false);
+                let cursor_target_enabled = controls
                     .tool_toggles
                     .get(CURSOR_SYNC_TARGET_TOGGLE)
                     .copied()
-                    .unwrap_or(false),
-            ),
+                    .unwrap_or(false);
+
+                let mut output_files = Vec::new();
+                if claude_target_enabled {
+                    output_files.push(CLAUDE_ROOT_FILE.to_string());
+                }
+                if windsurf_target_enabled {
+                    output_files.push(WINDSURF_RULES_DISPLAY_PATH.to_string());
+                }
+                if vscode_target_enabled {
+                    output_files.push(COPILOT_ROOT_FILE.to_string());
+                    output_files.push(COPILOT_INSTRUCTIONS_DISPLAY_PATH.to_string());
+                }
+                if codex_target_enabled {
+                    output_files.push(CODEX_ROOT_FILE.to_string());
+                }
+                if antigravity_target_enabled {
+                    output_files.push(ANTIGRAVITY_ROOT_FILE.to_string());
+                }
+                if cursor_target_enabled {
+                    output_files.push(CURSOR_RULES_DISPLAY_PATH.to_string());
+                }
+
+                (
+                    claude_target_enabled,
+                    windsurf_target_enabled,
+                    vscode_target_enabled,
+                    codex_target_enabled,
+                    antigravity_target_enabled,
+                    cursor_target_enabled,
+                    output_files,
+                )
+            }
             Err(err) => {
                 if verbose {
                     warn!(target: "pinksundew::sync", "[sync] Failed to load board sync targets: {err}");
                 }
-                (Vec::new(), false)
+                (false, false, false, false, false, false, Vec::new())
             }
         };
-        let mut output_files = get_output_file_paths(&board_targets);
-        if cursor_target_enabled {
-            output_files.push(CURSOR_RULES_DISPLAY_PATH.to_string());
-        }
+        let output_files = get_output_file_paths(&output_files);
 
         if verbose {
-            if !board_targets.is_empty() {
+            if !output_files.is_empty() {
                 info!(target: "pinksundew::sync", "[sync] Board-configured sync targets: {}", output_files.join(", "));
             } else {
                 info!(target: "pinksundew::sync", "[sync] No sync targets enabled for linked project.");
@@ -129,26 +217,79 @@ impl SyncService {
             }
         };
 
-        let sync_block = build_sync_block(&instructions, &project_name, true);
-        let context_documents = collect_context_documents(&instructions);
+        let global_rule_content_blocks = collect_global_rule_content_blocks(&instructions);
+        let custom_documents = collect_custom_instruction_documents(&instructions);
 
         let mut files_written = Vec::new();
         let mut write_errors = Vec::new();
 
-        for output_file in &output_files {
-            if output_file == CURSOR_RULES_DISPLAY_PATH {
-                continue;
-            }
-            let full_path = workspace_root.join(output_file);
+        if codex_target_enabled {
+            let sync_block = build_single_file_sync_block(
+                &global_rule_content_blocks,
+                &custom_documents,
+                &project_name,
+                ManifestStyle::InlineAlwaysWithConditionalManifest,
+            );
+            let full_path = workspace_root.join(CODEX_ROOT_FILE);
             match write_instruction_file(&full_path, &sync_block).await {
                 Ok(_) => {
                     if verbose {
-                        info!(target: "pinksundew::sync", "[sync] Wrote {}", output_file);
+                        info!(target: "pinksundew::sync", "[sync] Wrote {}", CODEX_ROOT_FILE);
                     }
-                    files_written.push(output_file.clone());
+                    files_written.push(CODEX_ROOT_FILE.to_string());
                 }
                 Err(err) => {
-                    let message = format!("Failed to write {}: {}", output_file, err);
+                    let message = format!("Failed to write {}: {}", CODEX_ROOT_FILE, err);
+                    if verbose {
+                        error!(target: "pinksundew::sync", "[sync] {}", message);
+                    }
+                    write_errors.push(message);
+                }
+            }
+        }
+
+        if claude_target_enabled {
+            let sync_block = build_single_file_sync_block(
+                &global_rule_content_blocks,
+                &custom_documents,
+                &project_name,
+                ManifestStyle::InlineAlwaysWithConditionalManifest,
+            );
+            let full_path = workspace_root.join(CLAUDE_ROOT_FILE);
+            match write_instruction_file(&full_path, &sync_block).await {
+                Ok(_) => {
+                    if verbose {
+                        info!(target: "pinksundew::sync", "[sync] Wrote {}", CLAUDE_ROOT_FILE);
+                    }
+                    files_written.push(CLAUDE_ROOT_FILE.to_string());
+                }
+                Err(err) => {
+                    let message = format!("Failed to write {}: {}", CLAUDE_ROOT_FILE, err);
+                    if verbose {
+                        error!(target: "pinksundew::sync", "[sync] {}", message);
+                    }
+                    write_errors.push(message);
+                }
+            }
+        }
+
+        if antigravity_target_enabled {
+            let sync_block = build_single_file_sync_block(
+                &global_rule_content_blocks,
+                &custom_documents,
+                &project_name,
+                ManifestStyle::InlineAlwaysWithConditionalManifest,
+            );
+            let full_path = workspace_root.join(ANTIGRAVITY_ROOT_FILE);
+            match write_instruction_file(&full_path, &sync_block).await {
+                Ok(_) => {
+                    if verbose {
+                        info!(target: "pinksundew::sync", "[sync] Wrote {}", ANTIGRAVITY_ROOT_FILE);
+                    }
+                    files_written.push(ANTIGRAVITY_ROOT_FILE.to_string());
+                }
+                Err(err) => {
+                    let message = format!("Failed to write {}: {}", ANTIGRAVITY_ROOT_FILE, err);
                     if verbose {
                         error!(target: "pinksundew::sync", "[sync] {}", message);
                     }
@@ -158,7 +299,14 @@ impl SyncService {
         }
 
         if cursor_target_enabled {
-            match sync_cursor_rule_files(&workspace_root, &instructions, &project_name, verbose).await
+            match sync_cursor_rule_files(
+                &workspace_root,
+                &global_rule_content_blocks,
+                &custom_documents,
+                &project_name,
+                verbose,
+            )
+            .await
             {
                 Ok(cursor_files) => files_written.extend(cursor_files),
                 Err(err) => {
@@ -171,7 +319,49 @@ impl SyncService {
             }
         }
 
-        for (relative_path, content) in context_documents {
+        if windsurf_target_enabled {
+            match sync_windsurf_rule_files(
+                &workspace_root,
+                &global_rule_content_blocks,
+                &custom_documents,
+                &project_name,
+                verbose,
+            )
+            .await
+            {
+                Ok(files) => files_written.extend(files),
+                Err(err) => {
+                    let message = format!("Failed to write Windsurf rules: {}", err);
+                    if verbose {
+                        error!(target: "pinksundew::sync", "[sync] {}", message);
+                    }
+                    write_errors.push(message);
+                }
+            }
+        }
+
+        if vscode_target_enabled {
+            match sync_copilot_instruction_files(
+                &workspace_root,
+                &global_rule_content_blocks,
+                &custom_documents,
+                &project_name,
+                verbose,
+            )
+            .await
+            {
+                Ok(files) => files_written.extend(files),
+                Err(err) => {
+                    let message = format!("Failed to write Copilot instruction files: {}", err);
+                    if verbose {
+                        error!(target: "pinksundew::sync", "[sync] {}", message);
+                    }
+                    write_errors.push(message);
+                }
+            }
+        }
+
+        for (relative_path, content) in collect_context_documents(&custom_documents) {
             let full_path = workspace_root.join(relative_path.as_str());
             match write_context_document(&full_path, &content).await {
                 Ok(_) => {
@@ -426,7 +616,7 @@ async fn fetch_active_instructions(
     ))
 }
 
-fn collect_rule_content_blocks(instructions: &[AgentInstructionSet]) -> Vec<String> {
+fn collect_global_rule_content_blocks(instructions: &[AgentInstructionSet]) -> Vec<String> {
     let mut content_blocks = Vec::new();
     for instruction in instructions {
         let mut files = instruction.files.clone();
@@ -449,19 +639,44 @@ fn collect_rule_content_blocks(instructions: &[AgentInstructionSet]) -> Vec<Stri
     content_blocks
 }
 
-fn build_sync_block(
-    instructions: &[AgentInstructionSet],
+fn build_single_file_sync_block(
+    global_rule_content_blocks: &[String],
+    custom_documents: &[CustomInstructionDocument],
     project_name: &str,
-    include_context_docs_note: bool,
+    manifest_style: ManifestStyle,
 ) -> String {
-    let mut content_blocks = collect_rule_content_blocks(instructions);
+    let mut content_blocks = global_rule_content_blocks.to_vec();
 
-    if include_context_docs_note
+    if matches!(
+        manifest_style,
+        ManifestStyle::InlineAlwaysWithConditionalManifest
+    ) {
+        for document in custom_documents
+            .iter()
+            .filter(|document| matches!(document.routing.mode, InstructionRoutingMode::Always))
+        {
+            content_blocks.push(render_inline_custom_document(document));
+        }
+    }
+
+    if !custom_documents.is_empty()
         && !content_blocks
-        .iter()
-        .any(|content| content.contains(CONTEXT_DOCS_NOTE))
+            .iter()
+            .any(|content| content.contains(CONTEXT_DOCS_NOTE))
     {
         content_blocks.push(CONTEXT_DOCS_NOTE.to_string());
+    }
+
+    let manifest_documents = match manifest_style {
+        ManifestStyle::ReferenceOnly => custom_documents.iter().collect::<Vec<_>>(),
+        ManifestStyle::InlineAlwaysWithConditionalManifest => custom_documents
+            .iter()
+            .filter(|document| !matches!(document.routing.mode, InstructionRoutingMode::Always))
+            .collect::<Vec<_>>(),
+    };
+
+    if let Some(manifest) = render_conditional_document_manifest(&manifest_documents) {
+        content_blocks.push(manifest);
     }
 
     let timestamp = Utc::now().to_rfc3339();
@@ -481,6 +696,42 @@ fn build_sync_block(
 
 fn is_context_document(file_name: &str) -> bool {
     file_name.replace('\\', "/").starts_with(CONTEXT_DOCS_DIR)
+}
+
+fn build_instruction_title_from_path(file_name: &str) -> String {
+    let normalized_path = file_name.replace('\\', "/");
+    let file_stem = normalized_path
+        .strip_prefix(CONTEXT_DOCS_DIR)
+        .unwrap_or(normalized_path.as_str())
+        .strip_suffix(".md")
+        .unwrap_or(normalized_path.as_str())
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .next_back()
+        .unwrap_or("untitled-instruction");
+
+    let normalized = file_stem
+        .replace(['-', '_'], " ")
+        .split_whitespace()
+        .map(|segment| {
+            let mut characters = segment.chars();
+            let Some(first) = characters.next() else {
+                return String::new();
+            };
+
+            let mut title = String::new();
+            title.extend(first.to_uppercase());
+            title.push_str(characters.as_str());
+            title
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if normalized.trim().is_empty() {
+        "Untitled Instruction".to_string()
+    } else {
+        normalized
+    }
 }
 
 fn safe_context_document_path(file_name: &str) -> Option<String> {
@@ -506,7 +757,9 @@ fn safe_context_document_path(file_name: &str) -> Option<String> {
     Some(normalized)
 }
 
-fn collect_context_documents(instructions: &[AgentInstructionSet]) -> Vec<(String, String)> {
+fn collect_custom_instruction_documents(
+    instructions: &[AgentInstructionSet],
+) -> Vec<CustomInstructionDocument> {
     let mut documents = Vec::new();
 
     for instruction in instructions {
@@ -520,25 +773,49 @@ fn collect_context_documents(instructions: &[AgentInstructionSet]) -> Vec<(Strin
             let Some(content) = file.content else {
                 continue;
             };
-            let trimmed = parse_instruction_document(content.as_str()).body;
-            let trimmed = trimmed.trim();
-            if trimmed.is_empty() {
+
+            let parsed = parse_instruction_document(content.as_str(), relative_path.as_str());
+            let body = parsed.body.trim();
+            if body.is_empty() {
                 continue;
             }
 
-            documents.push((relative_path, trimmed.to_string()));
+            documents.push(CustomInstructionDocument {
+                relative_path,
+                body: body.to_string(),
+                routing: parsed.routing,
+            });
         }
     }
 
     documents
 }
 
-fn parse_instruction_document(content: &str) -> ParsedInstructionDocument {
+fn collect_context_documents(
+    custom_documents: &[CustomInstructionDocument],
+) -> Vec<(String, String)> {
+    let mut documents = Vec::new();
+
+    for document in custom_documents {
+        let trimmed = document.body.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        documents.push((document.relative_path.clone(), trimmed.to_string()));
+    }
+
+    documents
+}
+
+fn parse_instruction_document(content: &str, source_path: &str) -> ParsedInstructionDocument {
     let normalized = content.replace("\r\n", "\n");
+    let default_title = build_instruction_title_from_path(source_path);
     let default = ParsedInstructionDocument {
         body: content.to_string(),
-        cursor: CursorRuleMetadata {
-            mode: CursorRuleMode::Always,
+        routing: InstructionRoutingMetadata {
+            title: default_title.clone(),
+            mode: InstructionRoutingMode::Always,
             description: String::new(),
             globs: String::new(),
         },
@@ -551,8 +828,10 @@ fn parse_instruction_document(content: &str) -> ParsedInstructionDocument {
         return default;
     };
 
+    let mut title = default_title;
     let mut description = String::new();
     let mut globs = String::new();
+    let mut routing_mode = None;
     let mut always_apply = false;
 
     for line in raw_frontmatter.lines() {
@@ -560,11 +839,25 @@ fn parse_instruction_document(content: &str) -> ParsedInstructionDocument {
             continue;
         };
         match key.trim() {
+            "title" => {
+                let parsed_title = parse_frontmatter_string(value);
+                if !parsed_title.trim().is_empty() {
+                    title = parsed_title;
+                }
+            }
             "description" => {
                 description = parse_frontmatter_string(value);
             }
             "globs" => {
                 globs = normalize_globs(parse_frontmatter_string(value).as_str());
+            }
+            "routingMode" => {
+                routing_mode = match parse_frontmatter_string(value).as_str() {
+                    "always" => Some(InstructionRoutingMode::Always),
+                    "match-files" => Some(InstructionRoutingMode::MatchFiles),
+                    "agent-decides" => Some(InstructionRoutingMode::AgentDecides),
+                    _ => None,
+                };
             }
             "alwaysApply" => {
                 always_apply = value.trim() == "true";
@@ -573,19 +866,22 @@ fn parse_instruction_document(content: &str) -> ParsedInstructionDocument {
         }
     }
 
-    let mode = if always_apply {
-        CursorRuleMode::Always
+    let mode = if let Some(mode) = routing_mode {
+        mode
+    } else if always_apply {
+        InstructionRoutingMode::Always
     } else if !globs.is_empty() {
-        CursorRuleMode::AutoAttached
+        InstructionRoutingMode::MatchFiles
     } else if !description.is_empty() {
-        CursorRuleMode::AgentRequested
+        InstructionRoutingMode::AgentDecides
     } else {
-        CursorRuleMode::Always
+        InstructionRoutingMode::Always
     };
 
     ParsedInstructionDocument {
         body: body.trim_start_matches('\n').to_string(),
-        cursor: CursorRuleMetadata {
+        routing: InstructionRoutingMetadata {
+            title,
             mode,
             description,
             globs,
@@ -625,13 +921,15 @@ fn normalize_globs(raw_value: &str) -> String {
 
 async fn sync_cursor_rule_files(
     workspace_root: &Path,
-    instructions: &[AgentInstructionSet],
+    global_rule_content_blocks: &[String],
+    custom_documents: &[CustomInstructionDocument],
     project_name: &str,
     verbose: bool,
 ) -> Result<Vec<String>> {
     cleanup_managed_cursor_rules(workspace_root, verbose).await?;
 
-    let generated_files = build_cursor_rule_files(instructions, project_name);
+    let generated_files =
+        build_cursor_rule_files(global_rule_content_blocks, custom_documents, project_name);
     if generated_files.is_empty() {
         return Ok(Vec::new());
     }
@@ -659,7 +957,140 @@ async fn cleanup_managed_cursor_rules(workspace_root: &Path, verbose: bool) -> R
     let legacy_cursor_file = workspace_root.join(LEGACY_CURSOR_RULE_FILE);
     let _ = remove_sync_block_if_present(&legacy_cursor_file, LEGACY_CURSOR_RULE_FILE, verbose).await;
 
-    let rules_dir = workspace_root.join(CURSOR_RULES_DIR);
+    cleanup_managed_directory_files(
+        workspace_root,
+        CURSOR_RULES_DIR,
+        CURSOR_MANAGED_RULE_PREFIX,
+        ".mdc",
+        verbose,
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn sync_windsurf_rule_files(
+    workspace_root: &Path,
+    global_rule_content_blocks: &[String],
+    custom_documents: &[CustomInstructionDocument],
+    project_name: &str,
+    verbose: bool,
+) -> Result<Vec<String>> {
+    cleanup_managed_windsurf_rules(workspace_root, verbose).await?;
+
+    let generated_files =
+        build_windsurf_rule_files(global_rule_content_blocks, custom_documents, project_name);
+    if generated_files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let rules_dir = workspace_root.join(WINDSURF_RULES_DIR);
+    fs::create_dir_all(&rules_dir).await?;
+
+    let mut files_written = Vec::new();
+    for file in generated_files {
+        let full_path = workspace_root.join(file.relative_path.as_str());
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&full_path, format!("{}\n", file.content.trim_end())).await?;
+        if verbose {
+            info!(target: "pinksundew::sync", "[sync] Wrote {}", file.relative_path);
+        }
+        files_written.push(file.relative_path);
+    }
+
+    Ok(files_written)
+}
+
+async fn cleanup_managed_windsurf_rules(workspace_root: &Path, verbose: bool) -> Result<()> {
+    let legacy_windsurf_file = workspace_root.join(LEGACY_WINDSURF_RULE_FILE);
+    let _ =
+        remove_sync_block_if_present(&legacy_windsurf_file, LEGACY_WINDSURF_RULE_FILE, verbose)
+            .await;
+
+    cleanup_managed_directory_files(
+        workspace_root,
+        WINDSURF_RULES_DIR,
+        WINDSURF_MANAGED_RULE_PREFIX,
+        ".md",
+        verbose,
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn sync_copilot_instruction_files(
+    workspace_root: &Path,
+    global_rule_content_blocks: &[String],
+    custom_documents: &[CustomInstructionDocument],
+    project_name: &str,
+    verbose: bool,
+) -> Result<Vec<String>> {
+    cleanup_managed_copilot_instructions(workspace_root, verbose).await?;
+
+    let mut files_written = Vec::new();
+    let root_sync_block = build_single_file_sync_block(
+        global_rule_content_blocks,
+        custom_documents,
+        project_name,
+        ManifestStyle::InlineAlwaysWithConditionalManifest,
+    );
+    let root_path = workspace_root.join(COPILOT_ROOT_FILE);
+    write_instruction_file(&root_path, &root_sync_block).await?;
+    if verbose {
+        info!(target: "pinksundew::sync", "[sync] Wrote {}", COPILOT_ROOT_FILE);
+    }
+    files_written.push(COPILOT_ROOT_FILE.to_string());
+
+    let generated_files = build_copilot_instruction_files(custom_documents, project_name);
+    if generated_files.is_empty() {
+        return Ok(files_written);
+    }
+
+    let instructions_dir = workspace_root.join(COPILOT_INSTRUCTIONS_DIR);
+    fs::create_dir_all(&instructions_dir).await?;
+
+    for file in generated_files {
+        let full_path = workspace_root.join(file.relative_path.as_str());
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&full_path, format!("{}\n", file.content.trim_end())).await?;
+        if verbose {
+            info!(target: "pinksundew::sync", "[sync] Wrote {}", file.relative_path);
+        }
+        files_written.push(file.relative_path);
+    }
+
+    Ok(files_written)
+}
+
+async fn cleanup_managed_copilot_instructions(
+    workspace_root: &Path,
+    verbose: bool,
+) -> Result<()> {
+    cleanup_managed_directory_files(
+        workspace_root,
+        COPILOT_INSTRUCTIONS_DIR,
+        COPILOT_MANAGED_RULE_PREFIX,
+        ".instructions.md",
+        verbose,
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn cleanup_managed_directory_files(
+    workspace_root: &Path,
+    rules_dir: &str,
+    file_prefix: &str,
+    extension: &str,
+    verbose: bool,
+) -> Result<()> {
+    let rules_dir = workspace_root.join(rules_dir);
     let mut read_dir = match fs::read_dir(&rules_dir).await {
         Ok(handle) => handle,
         Err(_) => return Ok(()),
@@ -670,7 +1101,7 @@ async fn cleanup_managed_cursor_rules(workspace_root: &Path, verbose: bool) -> R
         let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
-        if !file_name.starts_with(CURSOR_MANAGED_RULE_PREFIX) || !file_name.ends_with(".mdc") {
+        if !file_name.starts_with(file_prefix) || !file_name.ends_with(extension) {
             continue;
         }
 
@@ -721,7 +1152,7 @@ async fn remove_sync_block_if_present(
     if verbose {
         info!(
             target: "pinksundew::sync",
-            "[sync] Removed legacy Cursor sync block from {}",
+            "[sync] Removed managed sync block from {}",
             relative_path
         );
     }
@@ -730,20 +1161,22 @@ async fn remove_sync_block_if_present(
 }
 
 fn build_cursor_rule_files(
-    instructions: &[AgentInstructionSet],
+    global_rule_content_blocks: &[String],
+    custom_documents: &[CustomInstructionDocument],
     project_name: &str,
-) -> Vec<GeneratedCursorRuleFile> {
+) -> Vec<GeneratedTextFile> {
     let mut generated = Vec::new();
-    let global_rules = collect_rule_content_blocks(instructions);
+    let global_rules = global_rule_content_blocks.to_vec();
 
     if !global_rules.is_empty() {
-        generated.push(GeneratedCursorRuleFile {
+        generated.push(GeneratedTextFile {
             relative_path: CURSOR_GLOBAL_RULE_FILE.to_string(),
             content: render_cursor_rule_file(
                 project_name,
                 "global instructions",
-                &CursorRuleMetadata {
-                    mode: CursorRuleMode::Always,
+                &InstructionRoutingMetadata {
+                    title: "Global Instructions".to_string(),
+                    mode: InstructionRoutingMode::Always,
                     description: String::new(),
                     globs: String::new(),
                 },
@@ -754,41 +1187,113 @@ fn build_cursor_rule_files(
 
     let mut used_paths = HashSet::from([CURSOR_GLOBAL_RULE_FILE.to_string()]);
 
-    for instruction in instructions {
-        let mut files = instruction.files.clone();
-        files.sort_by(|a, b| a.file_name.cmp(&b.file_name));
-
-        for file in files {
-            let Some(relative_path) = safe_context_document_path(file.file_name.as_str()) else {
-                continue;
-            };
-            let Some(content) = file.content else {
-                continue;
-            };
-
-            let parsed = parse_instruction_document(content.as_str());
-            let body = parsed.body.trim();
-            if body.is_empty() {
-                continue;
-            }
-
-            let cursor_path = build_cursor_rule_path(relative_path.as_str(), &mut used_paths);
-            generated.push(GeneratedCursorRuleFile {
-                relative_path: cursor_path,
-                content: render_cursor_rule_file(
-                    project_name,
-                    relative_path.as_str(),
-                    &parsed.cursor,
-                    body,
-                ),
-            });
-        }
+    for document in custom_documents {
+        let cursor_path = build_managed_rule_path(
+            document.relative_path.as_str(),
+            CURSOR_RULES_DIR,
+            CURSOR_MANAGED_RULE_PREFIX,
+            ".mdc",
+            &mut used_paths,
+        );
+        generated.push(GeneratedTextFile {
+            relative_path: cursor_path,
+            content: render_cursor_rule_file(
+                project_name,
+                document.relative_path.as_str(),
+                &document.routing,
+                document.body.as_str(),
+            ),
+        });
     }
 
     generated
 }
 
-fn build_cursor_rule_path(relative_path: &str, used_paths: &mut HashSet<String>) -> String {
+fn build_windsurf_rule_files(
+    global_rule_content_blocks: &[String],
+    custom_documents: &[CustomInstructionDocument],
+    project_name: &str,
+) -> Vec<GeneratedTextFile> {
+    let mut generated = Vec::new();
+    if !global_rule_content_blocks.is_empty() {
+        generated.push(GeneratedTextFile {
+            relative_path: WINDSURF_GLOBAL_RULE_FILE.to_string(),
+            content: render_windsurf_rule_file(
+                project_name,
+                "global instructions",
+                &InstructionRoutingMetadata {
+                    title: "Global Instructions".to_string(),
+                    mode: InstructionRoutingMode::Always,
+                    description: String::new(),
+                    globs: String::new(),
+                },
+                global_rule_content_blocks.join("\n\n---\n\n").as_str(),
+            ),
+        });
+    }
+
+    let mut used_paths = HashSet::from([WINDSURF_GLOBAL_RULE_FILE.to_string()]);
+    for document in custom_documents {
+        let windsurf_path = build_managed_rule_path(
+            document.relative_path.as_str(),
+            WINDSURF_RULES_DIR,
+            WINDSURF_MANAGED_RULE_PREFIX,
+            ".md",
+            &mut used_paths,
+        );
+        generated.push(GeneratedTextFile {
+            relative_path: windsurf_path,
+            content: render_windsurf_rule_file(
+                project_name,
+                document.relative_path.as_str(),
+                &document.routing,
+                document.body.as_str(),
+            ),
+        });
+    }
+
+    generated
+}
+
+fn build_copilot_instruction_files(
+    custom_documents: &[CustomInstructionDocument],
+    project_name: &str,
+) -> Vec<GeneratedTextFile> {
+    let mut generated = Vec::new();
+    let mut used_paths = HashSet::new();
+
+    for document in custom_documents
+        .iter()
+        .filter(|document| matches!(document.routing.mode, InstructionRoutingMode::MatchFiles))
+    {
+        let relative_path = build_managed_rule_path(
+            document.relative_path.as_str(),
+            COPILOT_INSTRUCTIONS_DIR,
+            COPILOT_MANAGED_RULE_PREFIX,
+            ".instructions.md",
+            &mut used_paths,
+        );
+        generated.push(GeneratedTextFile {
+            relative_path,
+            content: render_copilot_instruction_file(
+                project_name,
+                document.relative_path.as_str(),
+                &document.routing,
+                document.body.as_str(),
+            ),
+        });
+    }
+
+    generated
+}
+
+fn build_managed_rule_path(
+    relative_path: &str,
+    target_dir: &str,
+    managed_prefix: &str,
+    extension: &str,
+    used_paths: &mut HashSet<String>,
+) -> String {
     let normalized = relative_path
         .strip_prefix(CONTEXT_DOCS_DIR)
         .unwrap_or(relative_path)
@@ -816,20 +1321,20 @@ fn build_cursor_rule_path(relative_path: &str, used_paths: &mut HashSet<String>)
         slug
     };
 
-    let base_path = format!("{CURSOR_RULES_DIR}/{CURSOR_MANAGED_RULE_PREFIX}{slug}.mdc");
+    let base_path = format!("{target_dir}/{managed_prefix}{slug}{extension}");
     if used_paths.insert(base_path.clone()) {
         return base_path;
     }
 
     let hashed = format!(
-        "{CURSOR_RULES_DIR}/{CURSOR_MANAGED_RULE_PREFIX}{slug}-{:08x}.mdc",
-        stable_cursor_rule_hash(relative_path)
+        "{target_dir}/{managed_prefix}{slug}-{:08x}{extension}",
+        stable_managed_rule_hash(relative_path)
     );
     used_paths.insert(hashed.clone());
     hashed
 }
 
-fn stable_cursor_rule_hash(value: &str) -> u32 {
+fn stable_managed_rule_hash(value: &str) -> u32 {
     let mut hash = 0_u32;
     for byte in value.bytes() {
         hash = hash.wrapping_mul(31).wrapping_add(u32::from(byte));
@@ -840,15 +1345,15 @@ fn stable_cursor_rule_hash(value: &str) -> u32 {
 fn render_cursor_rule_file(
     project_name: &str,
     source_path: &str,
-    metadata: &CursorRuleMetadata,
+    metadata: &InstructionRoutingMetadata,
     body: &str,
 ) -> String {
     let description = match metadata.mode {
-        CursorRuleMode::AgentRequested => metadata.description.trim(),
+        InstructionRoutingMode::AgentDecides => metadata.description.trim(),
         _ => "",
     };
     let globs = match metadata.mode {
-        CursorRuleMode::AutoAttached => metadata.globs.trim(),
+        InstructionRoutingMode::MatchFiles => metadata.globs.trim(),
         _ => "",
     };
     let timestamp = Utc::now().to_rfc3339();
@@ -860,10 +1365,117 @@ fn render_cursor_rule_file(
         "---\ndescription: {}\nglobs: {}\nalwaysApply: {}\n---\n\n{}\n\n{}",
         serde_json::to_string(description).unwrap_or_else(|_| "\"\"".to_string()),
         serde_json::to_string(globs).unwrap_or_else(|_| "\"\"".to_string()),
-        matches!(metadata.mode, CursorRuleMode::Always),
+        matches!(metadata.mode, InstructionRoutingMode::Always),
         header,
         body.trim()
     )
+}
+
+fn render_windsurf_rule_file(
+    project_name: &str,
+    source_path: &str,
+    metadata: &InstructionRoutingMetadata,
+    body: &str,
+) -> String {
+    let trigger = match metadata.mode {
+        InstructionRoutingMode::Always => "always_on",
+        InstructionRoutingMode::MatchFiles => "glob",
+        InstructionRoutingMode::AgentDecides => "model_decision",
+    };
+    let timestamp = Utc::now().to_rfc3339();
+    let header = format!(
+        "<!-- AUTO-GENERATED BY PINK SUNDEW - DO NOT EDIT THIS FILE DIRECTLY.\nLast synced: {timestamp}\nProject: {project_name}\nSource: {source_path}\n-->"
+    );
+    let mut lines = vec!["---".to_string(), format!("trigger: {trigger}")];
+    if matches!(metadata.mode, InstructionRoutingMode::MatchFiles) {
+        lines.push(format!(
+            "globs: {}",
+            serde_json::to_string(metadata.globs.trim()).unwrap_or_else(|_| "\"\"".to_string())
+        ));
+    }
+    if matches!(metadata.mode, InstructionRoutingMode::AgentDecides) {
+        lines.push(format!(
+            "description: {}",
+            serde_json::to_string(metadata.description.trim())
+                .unwrap_or_else(|_| "\"\"".to_string())
+        ));
+    }
+    lines.push("---".to_string());
+    lines.push(String::new());
+    lines.push(header);
+    lines.push(String::new());
+    lines.push(body.trim().to_string());
+    lines.join("\n")
+}
+
+fn render_copilot_instruction_file(
+    project_name: &str,
+    source_path: &str,
+    metadata: &InstructionRoutingMetadata,
+    body: &str,
+) -> String {
+    let timestamp = Utc::now().to_rfc3339();
+    let header = format!(
+        "<!-- AUTO-GENERATED BY PINK SUNDEW - DO NOT EDIT THIS FILE DIRECTLY.\nLast synced: {timestamp}\nProject: {project_name}\nSource: {source_path}\n-->"
+    );
+
+    format!(
+        "---\napplyTo: {}\n---\n\n{}\n\n{}",
+        serde_json::to_string(metadata.globs.trim()).unwrap_or_else(|_| "\"\"".to_string()),
+        header,
+        body.trim()
+    )
+}
+
+fn render_inline_custom_document(document: &CustomInstructionDocument) -> String {
+    format!(
+        "### {}\nSource: `{}`\n\n{}",
+        document.routing.title.trim(),
+        document.relative_path,
+        document.body.trim()
+    )
+}
+
+fn render_conditional_document_manifest(
+    custom_documents: &[&CustomInstructionDocument],
+) -> Option<String> {
+    if custom_documents.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec![
+        format!("### {CONDITIONAL_DOCS_HEADING}"),
+        "When a task matches one of the conditions below, read the referenced context document before making changes.".to_string(),
+    ];
+
+    for document in custom_documents {
+        let condition = match document.routing.mode {
+            InstructionRoutingMode::Always => "Always on.".to_string(),
+            InstructionRoutingMode::MatchFiles => format!(
+                "Read when touching files matching `{}`.",
+                document.routing.globs.trim()
+            ),
+            InstructionRoutingMode::AgentDecides => {
+                let description = document.routing.description.trim();
+                if description.is_empty() {
+                    format!(
+                        "Read when `{}` is relevant to the task.",
+                        document.routing.title.trim()
+                    )
+                } else {
+                    description.to_string()
+                }
+            }
+        };
+        lines.push(format!(
+            "- {} (`{}`): {}",
+            document.routing.title.trim(),
+            document.relative_path,
+            condition
+        ));
+    }
+
+    Some(lines.join("\n"))
 }
 
 fn replace_sync_block(existing: &str, sync_block: &str) -> String {
@@ -917,18 +1529,6 @@ async fn write_context_document(file_path: &Path, content: &str) -> Result<()> {
 
 pub fn get_output_file_paths(board_targets: &[String]) -> Vec<String> {
     dedupe(board_targets)
-}
-
-fn resolve_board_target_files(tool_toggles: &HashMap<String, bool>) -> Vec<String> {
-    let mut output = Vec::new();
-
-    for (toggle_id, file_path) in SYNC_TARGET_TOGGLES {
-        if tool_toggles.get(toggle_id).copied().unwrap_or(false) {
-            output.push(file_path.to_string());
-        }
-    }
-
-    dedupe(&output)
 }
 
 fn dedupe(items: &[String]) -> Vec<String> {
@@ -1050,18 +1650,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_board_target_files_uses_known_toggle_map() {
-        let toggles = HashMap::from([
-            ("sync_target_cursor".to_string(), true),
-            ("sync_target_vscode".to_string(), true),
-            ("sync_target_codex".to_string(), false),
-        ]);
-
-        let result = resolve_board_target_files(&toggles);
-        assert_eq!(result, vec![".github/copilot-instructions.md".to_string(),]);
-    }
-
-    #[test]
     fn replace_sync_block_appends_when_missing() {
         let existing = "# User instructions\n\nStay concise.\n";
         let sync = "<!-- BEGIN:pinksundew-sync -->\nhello\n<!-- END:pinksundew-sync -->";
@@ -1083,7 +1671,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_block_excludes_context_documents_and_points_to_docs_dir() {
+    fn single_file_sync_block_inlines_always_docs_and_lists_conditionals() {
         let instructions = vec![AgentInstructionSet {
             id: "set-1".to_string(),
             project_id: None,
@@ -1112,20 +1700,30 @@ mod tests {
                     content_hash: "context-hash".to_string(),
                     updated_at: "2026-04-20T00:00:00Z".to_string(),
                     created_at: None,
-                    content: Some("# Architecture\n\nDetails".to_string()),
+                    content: Some(
+                        "---\ntitle: \"Architecture\"\nroutingMode: \"agent-decides\"\ndescription: \"Use when editing architecture flows.\"\nglobs: \"\"\n---\n\n# Architecture\n\nDetails".to_string(),
+                    ),
                 },
             ],
         }];
 
-        let result = build_sync_block(&instructions, "Pink Sundew", true);
+        let global_rules = collect_global_rule_content_blocks(&instructions);
+        let custom_documents = collect_custom_instruction_documents(&instructions);
+        let result = build_single_file_sync_block(
+            &global_rules,
+            &custom_documents,
+            "Pink Sundew",
+            ManifestStyle::InlineAlwaysWithConditionalManifest,
+        );
 
         assert!(result.contains("Always read the task thread first."));
         assert!(result.contains(CONTEXT_DOCS_NOTE));
-        assert!(!result.contains("# Architecture"));
+        assert!(result.contains(CONDITIONAL_DOCS_HEADING));
+        assert!(result.contains(".pinksundew/docs/architecture.md"));
     }
 
     #[test]
-    fn collect_context_documents_keeps_safe_markdown_paths_only() {
+    fn collect_custom_instruction_documents_keeps_safe_markdown_paths_only() {
         let instructions = vec![AgentInstructionSet {
             id: "set-1".to_string(),
             project_id: None,
@@ -1162,11 +1760,17 @@ mod tests {
         }];
 
         assert_eq!(
-            collect_context_documents(&instructions),
-            vec![(
-                ".pinksundew/docs/database-schema.md".to_string(),
-                "# Schema".to_string()
-            )]
+            collect_custom_instruction_documents(&instructions),
+            vec![CustomInstructionDocument {
+                relative_path: ".pinksundew/docs/database-schema.md".to_string(),
+                body: "# Schema".to_string(),
+                routing: InstructionRoutingMetadata {
+                    title: "Database Schema".to_string(),
+                    mode: InstructionRoutingMode::MatchFiles,
+                    description: "Use when working on database schema changes.".to_string(),
+                    globs: "src/**/*.ts".to_string(),
+                },
+            }]
         );
     }
 
@@ -1207,7 +1811,9 @@ mod tests {
             ],
         }];
 
-        let files = build_cursor_rule_files(&instructions, "Pink Sundew");
+        let global_rules = collect_global_rule_content_blocks(&instructions);
+        let custom_documents = collect_custom_instruction_documents(&instructions);
+        let files = build_cursor_rule_files(&global_rules, &custom_documents, "Pink Sundew");
 
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].relative_path, CURSOR_GLOBAL_RULE_FILE);
@@ -1221,6 +1827,62 @@ mod tests {
             .content
             .contains("description: \"Use when editing architecture flows.\""));
         assert!(files[1].content.contains("# Architecture"));
+    }
+
+    #[test]
+    fn build_windsurf_rule_files_maps_trigger_types() {
+        let documents = vec![CustomInstructionDocument {
+            relative_path: ".pinksundew/docs/tests.md".to_string(),
+            body: "Use shared test helpers.".to_string(),
+            routing: InstructionRoutingMetadata {
+                title: "Tests".to_string(),
+                mode: InstructionRoutingMode::MatchFiles,
+                description: String::new(),
+                globs: "**/*.test.ts".to_string(),
+            },
+        }];
+
+        let files = build_windsurf_rule_files(&[], &documents, "Pink Sundew");
+
+        assert_eq!(files.len(), 1);
+        assert!(files[0].relative_path.starts_with(".windsurf/rules/pinksundew-tests"));
+        assert!(files[0].content.contains("trigger: glob"));
+        assert!(files[0].content.contains("globs: \"**/*.test.ts\""));
+    }
+
+    #[test]
+    fn build_copilot_instruction_files_only_includes_match_file_documents() {
+        let documents = vec![
+            CustomInstructionDocument {
+                relative_path: ".pinksundew/docs/backend.md".to_string(),
+                body: "Backend rules".to_string(),
+                routing: InstructionRoutingMetadata {
+                    title: "Backend".to_string(),
+                    mode: InstructionRoutingMode::MatchFiles,
+                    description: String::new(),
+                    globs: "src/backend/**/*.ts".to_string(),
+                },
+            },
+            CustomInstructionDocument {
+                relative_path: ".pinksundew/docs/product.md".to_string(),
+                body: "Product notes".to_string(),
+                routing: InstructionRoutingMetadata {
+                    title: "Product".to_string(),
+                    mode: InstructionRoutingMode::AgentDecides,
+                    description: "Use when working on product copy.".to_string(),
+                    globs: String::new(),
+                },
+            },
+        ];
+
+        let files = build_copilot_instruction_files(&documents, "Pink Sundew");
+
+        assert_eq!(files.len(), 1);
+        assert!(files[0]
+            .relative_path
+            .starts_with(".github/instructions/pinksundew-backend"));
+        assert!(files[0].content.contains("applyTo: \"src/backend/**/*.ts\""));
+        assert!(!files[0].content.contains("Product notes"));
     }
 
     #[tokio::test]

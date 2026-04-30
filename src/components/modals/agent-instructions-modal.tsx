@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { BookOpen, FilePlus2, FileText, Save, Shield, Trash2, X } from 'lucide-react'
+import { BookOpen, FilePenLine, FilePlus2, FileText, Save, Shield, Trash2, X } from 'lucide-react'
 import { SYNC_TARGET_LOGOS } from '@/components/brand/client-logos'
 import { createClient } from '@/lib/supabase/client'
 import {
@@ -18,11 +18,12 @@ import {
   updateInstructionFile,
 } from '@/domains/agent-instruction/mutations'
 import {
-  buildDefaultCursorRuleDescription,
-  CursorRuleMode,
-  parseCursorRuleDocument,
-  serializeCursorRuleDocument,
-} from '@/domains/agent-instruction/cursor-rules'
+  buildDefaultInstructionDescription,
+  buildInstructionTitle,
+  InstructionRoutingMode,
+  parseInstructionRoutingDocument,
+  serializeInstructionRoutingDocument,
+} from '@/domains/agent-instruction/instruction-routing'
 import { upsertProjectAgentControls } from '@/domains/agent-control/mutations'
 import { getProjectAgentControls } from '@/domains/agent-control/queries'
 import { ConfirmModal } from './confirm-modal'
@@ -46,25 +47,25 @@ const CONTEXT_DOCS_DIR = '.pinksundew/docs/'
 const CONTEXT_DOCS_NOTE =
   'Project context documents live in .pinksundew/docs/. Read them before making architectural changes.'
 const DEFAULT_INSTRUCTION_FILE_NAME = 'agent-rules.md'
-const CURSOR_RULE_MODE_OPTIONS: Array<{
-  id: CursorRuleMode
+const ROUTING_MODE_OPTIONS: Array<{
+  id: InstructionRoutingMode
   label: string
   description: string
 }> = [
   {
     id: 'always',
     label: 'Always',
-    description: 'Always attach this file in Cursor.',
+    description: 'Keep this instruction active across every supported environment.',
   },
   {
-    id: 'agent-requested',
-    label: 'Agent Decides',
-    description: 'Let Cursor pull this file in when it seems relevant.',
-  },
-  {
-    id: 'auto-attached',
+    id: 'match-files',
     label: 'Match Files',
-    description: 'Attach this file when matching paths are referenced.',
+    description: 'Attach this instruction when matching files or paths are involved.',
+  },
+  {
+    id: 'agent-decides',
+    label: 'Agent Decides',
+    description: 'Provide a short description so supported agents can pull it in when relevant.',
   },
 ]
 
@@ -101,40 +102,31 @@ function ensureMarkdownExtension(fileName: string) {
   return fileName.endsWith('.md') ? fileName : `${fileName}.md`
 }
 
-function normalizeInstructionFileName(
-  rawValue: string,
-  selectedFile: Pick<AgentInstructionFile, 'file_name'>
-) {
-  const normalizedValue = rawValue.trim().replace(/\\/g, '/')
-  const isContext = isContextDocument(selectedFile)
-
-  if (!isContext) {
-    const lastSegment = normalizedValue.split('/').filter(Boolean).pop() ?? ''
-    return ensureMarkdownExtension(normalizePathSegment(lastSegment) || DEFAULT_INSTRUCTION_FILE_NAME)
-  }
-
-  const withoutPrefix = normalizedValue.startsWith(CONTEXT_DOCS_DIR)
-    ? normalizedValue.slice(CONTEXT_DOCS_DIR.length)
-    : normalizedValue
-
-  const segments = withoutPrefix
-    .split('/')
-    .map(normalizePathSegment)
-    .filter((segment) => segment.length > 0 && segment !== '.' && segment !== '..')
-
-  const docPath = ensureMarkdownExtension(segments.join('/') || 'project-context.md')
-  return `${CONTEXT_DOCS_DIR}${docPath}`
+function normalizeInstructionFileName(rawValue: string) {
+  const lastSegment = rawValue.trim().replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? ''
+  return ensureMarkdownExtension(normalizePathSegment(lastSegment) || DEFAULT_INSTRUCTION_FILE_NAME)
 }
 
-function buildNextContextFileName(files: AgentInstructionFile[]) {
-  const existingNames = new Set(files.map((file) => file.file_name))
-  let index = 1
+function buildContextStoragePath(
+  title: string,
+  files: AgentInstructionFile[],
+  currentFileId?: string | null
+) {
+  const existingNames = new Set(
+    files
+      .filter((file) => file.id !== currentFileId)
+      .map((file) => file.file_name.replace(/\\/g, '/'))
+  )
+  const baseName = normalizePathSegment(title) || 'instruction'
+  let candidate = `${CONTEXT_DOCS_DIR}${ensureMarkdownExtension(baseName)}`
+  let index = 2
 
-  while (existingNames.has(`${CONTEXT_DOCS_DIR}context-${index}.md`)) {
+  while (existingNames.has(candidate)) {
+    candidate = `${CONTEXT_DOCS_DIR}${ensureMarkdownExtension(`${baseName}-${index}`)}`
     index += 1
   }
 
-  return `${CONTEXT_DOCS_DIR}context-${index}.md`
+  return candidate
 }
 
 function slugifyInstructionCode(rawValue: string) {
@@ -182,10 +174,11 @@ export function AgentInstructionsModal({
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null)
 
   const [draftContent, setDraftContent] = useState('')
-  const [draftFileName, setDraftFileName] = useState('')
-  const [cursorRuleMode, setCursorRuleMode] = useState<CursorRuleMode>('always')
-  const [cursorRuleDescription, setCursorRuleDescription] = useState('')
-  const [cursorRuleGlobs, setCursorRuleGlobs] = useState('')
+  const [draftTitle, setDraftTitle] = useState('')
+  const [routingMode, setRoutingMode] = useState<InstructionRoutingMode>('always')
+  const [routingDescription, setRoutingDescription] = useState('')
+  const [routingGlobs, setRoutingGlobs] = useState('')
+  const [editingFileId, setEditingFileId] = useState<string | null>(null)
 
   const [allowTaskCompletion, setAllowTaskCompletion] = useState(true)
   const [toolToggles, setToolToggles] = useState<ToolToggleMap>(getDefaultToolToggles())
@@ -215,6 +208,33 @@ export function AgentInstructionsModal({
     () => selectedSet?.files.filter(isContextDocument) ?? [],
     [selectedSet]
   )
+
+  const contextFileMeta = useMemo(() => {
+    const entries = contextFiles.map((file) => {
+      const fallbackTitle = buildInstructionTitle(getInstructionFileLabel(file))
+      const parsedDocument = parseInstructionRoutingDocument(file.content, {
+        defaultTitle: fallbackTitle,
+        defaultDescription: buildDefaultInstructionDescription(fallbackTitle),
+      })
+
+      const subtitle =
+        parsedDocument.config.mode === 'always'
+          ? 'Always on'
+          : parsedDocument.config.mode === 'match-files'
+            ? parsedDocument.config.globs || 'Match selected files'
+            : parsedDocument.config.description || 'Agent decides when relevant'
+
+      return [
+        file.id,
+        {
+          title: parsedDocument.config.title,
+          subtitle,
+        },
+      ] as const
+    })
+
+    return new Map(entries)
+  }, [contextFiles])
 
   const selectedFile = useMemo(() => {
     if (!selectedSet) {
@@ -343,30 +363,35 @@ export function AgentInstructionsModal({
   useEffect(() => {
     if (!selectedFile) {
       setDraftContent('')
-      setDraftFileName('')
-      setCursorRuleMode('always')
-      setCursorRuleDescription('')
-      setCursorRuleGlobs('')
+      setDraftTitle('')
+      setRoutingMode('always')
+      setRoutingDescription('')
+      setRoutingGlobs('')
+      setEditingFileId(null)
       return
     }
 
-    setDraftFileName(getInstructionFileLabel(selectedFile))
     if (isGlobalTab) {
       setDraftContent(selectedFile.content)
-      setCursorRuleMode('always')
-      setCursorRuleDescription('')
-      setCursorRuleGlobs('')
+      setDraftTitle('')
+      setRoutingMode('always')
+      setRoutingDescription('')
+      setRoutingGlobs('')
+      setEditingFileId(null)
       return
     }
 
-    const parsedDocument = parseCursorRuleDocument(selectedFile.content, {
-      defaultDescription: buildDefaultCursorRuleDescription(getInstructionFileLabel(selectedFile)),
+    const fallbackTitle = buildInstructionTitle(getInstructionFileLabel(selectedFile))
+    const parsedDocument = parseInstructionRoutingDocument(selectedFile.content, {
+      defaultTitle: fallbackTitle,
+      defaultDescription: buildDefaultInstructionDescription(fallbackTitle),
     })
 
     setDraftContent(parsedDocument.body)
-    setCursorRuleMode(parsedDocument.config.mode)
-    setCursorRuleDescription(parsedDocument.config.description)
-    setCursorRuleGlobs(parsedDocument.config.globs)
+    setDraftTitle(parsedDocument.config.title)
+    setRoutingMode(parsedDocument.config.mode)
+    setRoutingDescription(parsedDocument.config.description)
+    setRoutingGlobs(parsedDocument.config.globs)
   }, [isGlobalTab, selectedFile])
 
   const handleToggleTool = (toolId: CoreMcpToolId) => {
@@ -423,12 +448,12 @@ export function AgentInstructionsModal({
   const handleSaveFile = async () => {
     if (!selectedFile) return
 
-    if (!isGlobalTab && cursorRuleMode === 'agent-requested' && !cursorRuleDescription.trim()) {
-      setInstructionErrorMessage('Add a short Cursor description so Agent Decides mode knows when to use this file.')
+    if (!isGlobalTab && routingMode === 'agent-decides' && !routingDescription.trim()) {
+      setInstructionErrorMessage('Add a short description so supported agents know when to use this file.')
       return
     }
 
-    if (!isGlobalTab && cursorRuleMode === 'auto-attached' && !cursorRuleGlobs.trim()) {
+    if (!isGlobalTab && routingMode === 'match-files' && !routingGlobs.trim()) {
       setInstructionErrorMessage('Add one or more glob patterns for Match Files mode.')
       return
     }
@@ -440,14 +465,17 @@ export function AgentInstructionsModal({
       const content =
         isGlobalTab
           ? draftContent
-          : serializeCursorRuleDocument(draftContent, {
-              mode: cursorRuleMode,
-              description: cursorRuleDescription,
-              globs: cursorRuleGlobs,
+          : serializeInstructionRoutingDocument(draftContent, {
+              title: draftTitle,
+              mode: routingMode,
+              description: routingDescription,
+              globs: routingGlobs,
             })
 
       await updateInstructionFile(supabase, selectedFile.id, {
-        file_name: normalizeInstructionFileName(draftFileName, selectedFile),
+        file_name: isGlobalTab
+          ? normalizeInstructionFileName(selectedFile.file_name)
+          : buildContextStoragePath(draftTitle, selectedSet?.files ?? [], selectedFile.id),
         content,
       })
 
@@ -455,6 +483,7 @@ export function AgentInstructionsModal({
         selectedSetId: selectedSet?.id ?? null,
         selectedFileId: selectedFile.id,
       })
+      setEditingFileId(null)
     } catch (error) {
       console.error('Error saving instruction file:', error)
       setInstructionErrorMessage('Unable to save that instruction file.')
@@ -470,17 +499,24 @@ export function AgentInstructionsModal({
     setInstructionErrorMessage(null)
 
     try {
-      const fileName = buildNextContextFileName(selectedSet.files)
+      const title = `Instruction ${contextFiles.length + 1}`
+      const fileName = buildContextStoragePath(title, selectedSet.files)
       const createdFile = await createInstructionFile(supabase, {
         set_id: selectedSet.id,
         file_name: fileName,
-        content: `# ${getInstructionFileLabel({ file_name: fileName }).replace(/\.md$/i, '')}\n\n`,
+        content: serializeInstructionRoutingDocument(`# ${title}\n\n`, {
+          title,
+          mode: 'agent-decides',
+          description: buildDefaultInstructionDescription(title),
+          globs: '',
+        }),
       })
 
       await fetchInstructionSets({
         selectedSetId: selectedSet.id,
         selectedFileId: createdFile.id,
       })
+      setEditingFileId(createdFile.id)
     } catch (error) {
       console.error('Error creating context document:', error)
       setInstructionErrorMessage('Unable to create a context document right now.')
@@ -527,7 +563,7 @@ export function AgentInstructionsModal({
   const currentInstructionTitle = isGlobalTab ? 'Global Agent Rules' : 'Custom Context Files'
   const currentInstructionDescription = isGlobalTab
     ? 'Behavioral rules applied to connected AI sessions.'
-    : 'Markdown context documents that stay in `.pinksundew/docs/` and become Cursor project rules when Cursor sync is enabled.'
+    : 'Answer a couple routing questions per file and Pink Sundew maps them across each connected environment.'
   const currentInstructionPlaceholder = isGlobalTab
     ? `# Agent Rules\n\n${CONTEXT_DOCS_NOTE}`
     : '# Architecture\n\nDescribe important domain, data, and product context here.'
@@ -673,8 +709,8 @@ export function AgentInstructionsModal({
                       Custom Files
                     </h3>
                     <p className="mt-1.5 text-xs leading-snug text-slate-500">
-                      These files stay in .pinksundew/docs/ for shared tooling. When Cursor sync is
-                      enabled, Pink Sundew also generates matching `.cursor/rules/*.mdc` files.
+                      Each file becomes a shared source document that Pink Sundew routes into the
+                      right env-specific instruction format for connected tools.
                     </p>
                     <button
                       type="button"
@@ -689,19 +725,75 @@ export function AgentInstructionsModal({
                     <div className="mt-4 space-y-1.5">
                       {currentInstructionFiles.length > 0 ? (
                         currentInstructionFiles.map((file) => (
-                          <button
+                          <div
                             key={file.id}
-                            type="button"
-                            onClick={() => setSelectedFileId(file.id)}
                             className={`flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm font-medium transition-colors ${
                               selectedFileId === file.id
                                 ? 'border-primary/40 bg-primary/10 text-primary-foreground'
                                 : 'border-slate-200 bg-white text-slate-700 hover:border-primary/20'
                             }`}
                           >
-                            <BookOpen className="h-4 w-4 shrink-0" />
-                            <span className="min-w-0 truncate">{getInstructionFileLabel(file)}</span>
-                          </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedFileId(file.id)
+                                setEditingFileId(null)
+                              }}
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                            >
+                              <BookOpen className="h-4 w-4 shrink-0" />
+                              <div className="min-w-0 flex-1">
+                                {editingFileId === file.id && selectedFileId === file.id ? (
+                                  <input
+                                    value={draftTitle}
+                                    onChange={(event) => setDraftTitle(event.target.value)}
+                                    onBlur={() => setEditingFileId(null)}
+                                    onKeyDown={(event) => {
+                                      if (event.key === 'Enter') {
+                                        event.preventDefault()
+                                        setEditingFileId(null)
+                                      }
+
+                                      if (event.key === 'Escape') {
+                                        event.preventDefault()
+                                        setEditingFileId(null)
+                                      }
+                                    }}
+                                    className="w-full rounded bg-white/80 px-1 py-0.5 text-sm font-semibold text-slate-800 outline-none ring-1 ring-primary/30"
+                                    aria-label="Instruction title"
+                                    autoFocus
+                                  />
+                                ) : (
+                                  <div className="truncate font-semibold text-slate-800">
+                                    {contextFileMeta.get(file.id)?.title ?? buildInstructionTitle(getInstructionFileLabel(file))}
+                                  </div>
+                                )}
+                                <div className="truncate text-[11px] font-normal text-slate-500">
+                                  {contextFileMeta.get(file.id)?.subtitle ?? 'Custom instruction'}
+                                </div>
+                              </div>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedFileId(file.id)
+                                setEditingFileId(file.id)
+                              }}
+                              className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white hover:text-slate-700"
+                              aria-label={`Rename ${contextFileMeta.get(file.id)?.title ?? 'instruction file'}`}
+                            >
+                              <FilePenLine className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setInstructionFilePendingDelete(file)}
+                              className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-white hover:text-rose-600"
+                              aria-label={`Delete ${contextFileMeta.get(file.id)?.title ?? 'instruction file'}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         ))
                       ) : (
                         <div className="rounded-lg border border-dashed border-slate-300 bg-white/60 px-3 py-3 text-xs leading-5 text-slate-500">
@@ -743,47 +835,23 @@ export function AgentInstructionsModal({
                     <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                       {!isGlobalTab ? (
                         <div className="border-b border-slate-200 bg-slate-50/70 px-4 py-3">
-                          <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-600">
-                            File
-                          </label>
-                          <div className="flex items-center gap-2">
-                            <div className="flex min-w-0 flex-1 items-center rounded-md border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-700">
-                              <span className="mr-1 shrink-0 text-slate-400">{CONTEXT_DOCS_DIR}</span>
-                              <input
-                                value={draftFileName}
-                                onChange={(event) => setDraftFileName(event.target.value)}
-                                className="min-w-0 flex-1 bg-transparent outline-none"
-                                aria-label="Instruction file name"
-                              />
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => setInstructionFilePendingDelete(selectedFile)}
-                              disabled={isInstructionLoading || isInstructionDeleteLoading}
-                              className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              Delete
-                            </button>
-                          </div>
-
                           <div className="mt-4 rounded-lg border border-pink-200/70 bg-pink-50/60 p-3">
                             <div className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                              Cursor Rule Mode
+                              When Should This Apply?
                             </div>
                             <p className="mt-1 text-xs leading-5 text-slate-500">
-                              These settings only affect Cursor. Other clients still read the
-                              markdown file from {CONTEXT_DOCS_DIR}.
+                              Pink Sundew uses this once and translates it into the best supported
+                              format for each connected environment.
                             </p>
 
                             <div className="mt-3 flex flex-wrap gap-2">
-                              {CURSOR_RULE_MODE_OPTIONS.map((option) => (
+                              {ROUTING_MODE_OPTIONS.map((option) => (
                                 <button
                                   key={option.id}
                                   type="button"
-                                  onClick={() => setCursorRuleMode(option.id)}
+                                  onClick={() => setRoutingMode(option.id)}
                                   className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
-                                    cursorRuleMode === option.id
+                                    routingMode === option.id
                                       ? 'border-primary bg-white text-primary shadow-sm'
                                       : 'border-pink-200 bg-white/70 text-slate-600 hover:border-primary/30 hover:text-slate-800'
                                   }`}
@@ -794,32 +862,32 @@ export function AgentInstructionsModal({
                             </div>
 
                             <p className="mt-2 text-xs text-slate-500">
-                              {CURSOR_RULE_MODE_OPTIONS.find((option) => option.id === cursorRuleMode)
+                              {ROUTING_MODE_OPTIONS.find((option) => option.id === routingMode)
                                 ?.description ?? ''}
                             </p>
 
-                            {cursorRuleMode === 'agent-requested' ? (
+                            {routingMode === 'agent-decides' ? (
                               <div className="mt-3">
                                 <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                                  Cursor Description
+                                  When Should Agents Pull This In?
                                 </label>
                                 <input
-                                  value={cursorRuleDescription}
-                                  onChange={(event) => setCursorRuleDescription(event.target.value)}
-                                  placeholder={buildDefaultCursorRuleDescription(draftFileName)}
+                                  value={routingDescription}
+                                  onChange={(event) => setRoutingDescription(event.target.value)}
+                                  placeholder={buildDefaultInstructionDescription(draftTitle)}
                                   className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-primary"
                                 />
                               </div>
                             ) : null}
 
-                            {cursorRuleMode === 'auto-attached' ? (
+                            {routingMode === 'match-files' ? (
                               <div className="mt-3">
                                 <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600">
                                   File Globs
                                 </label>
                                 <input
-                                  value={cursorRuleGlobs}
-                                  onChange={(event) => setCursorRuleGlobs(event.target.value)}
+                                  value={routingGlobs}
+                                  onChange={(event) => setRoutingGlobs(event.target.value)}
                                   placeholder="src/**/*.ts,src/**/*.tsx"
                                   className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-primary"
                                 />
@@ -831,12 +899,14 @@ export function AgentInstructionsModal({
                           </div>
                         </div>
                       ) : null}
-                      <textarea
-                        value={draftContent}
-                        onChange={(event) => setDraftContent(event.target.value)}
-                        placeholder={currentInstructionPlaceholder}
-                        className="h-full min-h-0 w-full resize-none overflow-y-auto bg-white p-5 font-mono text-sm leading-loose text-slate-700 outline-none focus:ring-0"
-                      />
+                      <div className="flex min-h-0 flex-1 overflow-hidden">
+                        <textarea
+                          value={draftContent}
+                          onChange={(event) => setDraftContent(event.target.value)}
+                          placeholder={currentInstructionPlaceholder}
+                          className="min-h-0 flex-1 resize-none overflow-y-auto bg-white p-5 font-mono text-sm leading-loose text-slate-700 outline-none focus:ring-0"
+                        />
+                      </div>
                     </div>
                   ) : isGlobalTab ? (
                     <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white/50 px-6 text-center text-sm text-slate-500">

@@ -87,8 +87,9 @@ export const INSTRUCTION_SYNC_TARGET_CATALOG = [
   {
     id: 'sync_target_vscode',
     name: 'VS Code',
-    file_path: '.github/copilot-instructions.md',
-    description: 'Write synced instructions to `.github/copilot-instructions.md`.',
+    file_path: '.github/copilot-instructions.md + .github/instructions/*.instructions.md',
+    description:
+      'Write synced instructions to `.github/copilot-instructions.md` and managed `.github/instructions/*.instructions.md` files.',
     default_enabled: false,
   },
   {
@@ -115,8 +116,8 @@ export const INSTRUCTION_SYNC_TARGET_CATALOG = [
   {
     id: 'sync_target_windsurf',
     name: 'Windsurf',
-    file_path: '.windsurfrules',
-    description: 'Write synced instructions to `.windsurfrules`.',
+    file_path: '.windsurf/rules/*.md',
+    description: 'Write synced instructions to managed Windsurf workspace rules in `.windsurf/rules/`.',
     default_enabled: false,
   },
   {

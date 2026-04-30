@@ -173,6 +173,19 @@ function createGuides(): Record<GuideId, Guide> {
       ],
       getSnippets: (config) => [setupSnippet('vscode', config)],
     },
+    windsurf: {
+      id: 'windsurf',
+      label: 'Windsurf',
+      title: 'Connect Windsurf',
+      description:
+        'Register the MCP server in `~/.codeium/windsurf/mcp_config.json` and sync Windsurf workspace rules for this project.',
+      steps: [
+        'Install the Pink Sundew CLI once on your machine.',
+        'Copy the setup command and run it from your repo root.',
+        'Refresh MCP servers in Windsurf and confirm Pink Sundew tools appear.',
+      ],
+      getSnippets: (config) => [setupSnippet('windsurf', config)],
+    },
   }
 }
 
