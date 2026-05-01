@@ -12,8 +12,12 @@ type TaskCardProps = {
   isSelected?: boolean
   isDeleting?: boolean
   isSelectionMode?: boolean
+  /** Min height for the sortable placeholder while dragging (avoids layout jump). */
+  dragPlaceholderMinHeight?: number
   onClick?: (task: TaskWithTags) => void
 }
+
+const DEFAULT_DRAG_PLACEHOLDER_MIN_HEIGHT = 128
 
 const PRIORITY_COLORS = {
   low: 'bg-emerald-50 text-emerald-700 border-emerald-200',
@@ -47,6 +51,7 @@ export function TaskCard({
   isSelected = false,
   isDeleting = false,
   isSelectionMode = false,
+  dragPlaceholderMinHeight,
   onClick,
 }: TaskCardProps) {
   const {
@@ -90,11 +95,14 @@ export function TaskCard({
       : ''
 
   if (isDragging && !isOverlay) {
+    const placeholderMinHeight =
+      dragPlaceholderMinHeight ?? DEFAULT_DRAG_PLACEHOLDER_MIN_HEIGHT
+
     return (
       <div
         ref={setNodeRef}
-        style={style}
-        className="w-full h-32 border-2 border-dashed border-primary/50 bg-primary/5 rounded-xl opacity-50"
+        style={{ ...style, minHeight: placeholderMinHeight }}
+        className="w-full border-2 border-dashed border-primary/50 bg-primary/5 rounded-xl opacity-50"
       />
     )
   }

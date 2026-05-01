@@ -955,7 +955,8 @@ async fn sync_cursor_rule_files(
 
 async fn cleanup_managed_cursor_rules(workspace_root: &Path, verbose: bool) -> Result<()> {
     let legacy_cursor_file = workspace_root.join(LEGACY_CURSOR_RULE_FILE);
-    let _ = remove_sync_block_if_present(&legacy_cursor_file, LEGACY_CURSOR_RULE_FILE, verbose).await;
+    let _ =
+        remove_sync_block_if_present(&legacy_cursor_file, LEGACY_CURSOR_RULE_FILE, verbose).await;
 
     cleanup_managed_directory_files(
         workspace_root,
@@ -1005,9 +1006,8 @@ async fn sync_windsurf_rule_files(
 
 async fn cleanup_managed_windsurf_rules(workspace_root: &Path, verbose: bool) -> Result<()> {
     let legacy_windsurf_file = workspace_root.join(LEGACY_WINDSURF_RULE_FILE);
-    let _ =
-        remove_sync_block_if_present(&legacy_windsurf_file, LEGACY_WINDSURF_RULE_FILE, verbose)
-            .await;
+    let _ = remove_sync_block_if_present(&legacy_windsurf_file, LEGACY_WINDSURF_RULE_FILE, verbose)
+        .await;
 
     cleanup_managed_directory_files(
         workspace_root,
@@ -1067,10 +1067,7 @@ async fn sync_copilot_instruction_files(
     Ok(files_written)
 }
 
-async fn cleanup_managed_copilot_instructions(
-    workspace_root: &Path,
-    verbose: bool,
-) -> Result<()> {
+async fn cleanup_managed_copilot_instructions(workspace_root: &Path, verbose: bool) -> Result<()> {
     cleanup_managed_directory_files(
         workspace_root,
         COPILOT_INSTRUCTIONS_DIR,
@@ -1817,7 +1814,9 @@ mod tests {
 
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].relative_path, CURSOR_GLOBAL_RULE_FILE);
-        assert!(files[0].content.contains("Always read the task thread first."));
+        assert!(files[0]
+            .content
+            .contains("Always read the task thread first."));
         assert!(!files[0].content.contains(CONTEXT_DOCS_NOTE));
         assert!(files[1]
             .relative_path
@@ -1845,7 +1844,9 @@ mod tests {
         let files = build_windsurf_rule_files(&[], &documents, "Pink Sundew");
 
         assert_eq!(files.len(), 1);
-        assert!(files[0].relative_path.starts_with(".windsurf/rules/pinksundew-tests"));
+        assert!(files[0]
+            .relative_path
+            .starts_with(".windsurf/rules/pinksundew-tests"));
         assert!(files[0].content.contains("trigger: glob"));
         assert!(files[0].content.contains("globs: \"**/*.test.ts\""));
     }
@@ -1881,7 +1882,9 @@ mod tests {
         assert!(files[0]
             .relative_path
             .starts_with(".github/instructions/pinksundew-backend"));
-        assert!(files[0].content.contains("applyTo: \"src/backend/**/*.ts\""));
+        assert!(files[0]
+            .content
+            .contains("applyTo: \"src/backend/**/*.ts\""));
         assert!(!files[0].content.contains("Product notes"));
     }
 

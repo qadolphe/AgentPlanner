@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
   DndContext, 
@@ -205,6 +205,9 @@ export function KanbanBoard({
     description: string
   } | null>(null)
   const [activeTask, setActiveTask] = useState<TaskWithTags | null>(null)
+  const [dragPlaceholderMinHeight, setDragPlaceholderMinHeight] = useState<number | undefined>(
+    undefined
+  )
   const [isDeleteArmed, setIsDeleteArmed] = useState(false)
   const [authPromptMessage, setAuthPromptMessage] = useState<string | null>(null)
   const [isSettingsMenuOpen, setIsSettingsMenuOpen] = useState(false)
@@ -554,7 +557,24 @@ export function KanbanBoard({
   useEffect(() => {
     updatePillGeometry()
     updateFloatingPillBottom()
-  }, [activeTask, isSelectionMode, tasks, updateFloatingPillBottom, updatePillGeometry])
+  }, [activeTask, isSelectionMode, updateFloatingPillBottom, updatePillGeometry])
+
+  useEffect(() => {
+    if (dragStartTasksRef.current) {
+      return
+    }
+
+    updatePillGeometry()
+    updateFloatingPillBottom()
+  }, [tasks, updateFloatingPillBottom, updatePillGeometry])
+
+  const dragPlaceholderByTaskId = useMemo(() => {
+    if (!activeTask || dragPlaceholderMinHeight === undefined) {
+      return undefined
+    }
+
+    return new Map<string, number>([[activeTask.id, dragPlaceholderMinHeight]])
+  }, [activeTask, dragPlaceholderMinHeight])
 
   // Click outside handler for settings menu
   useEffect(() => {
@@ -841,6 +861,21 @@ export function KanbanBoard({
     return normalizeTaskPositions(reordered)
   }
 
+  const syncDragPlaceholderHeight = useCallback(
+    (rectRef: DragStartEvent['active']['rect']) => {
+      const initial = rectRef.current?.initial
+      const translated = rectRef.current?.translated
+      const pick = (value: number | undefined) =>
+        typeof value === 'number' && Number.isFinite(value) && value >= 8
+          ? Math.ceil(value)
+          : undefined
+
+      const height = pick(initial?.height) ?? pick(translated?.height) ?? 128
+      setDragPlaceholderMinHeight(height)
+    },
+    []
+  )
+
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event
     const activeId = String(active.id)
@@ -849,11 +884,16 @@ export function KanbanBoard({
     setDeleteArmedIfChanged(false)
     dragStartTasksRef.current = [...tasksRef.current]
     setActiveTask(tasksRef.current.find((task) => task.id === activeId) || null)
+    syncDragPlaceholderHeight(event.active.rect)
+    requestAnimationFrame(() => {
+      syncDragPlaceholderHeight(event.active.rect)
+    })
   }
 
   const handleDragCancel = () => {
     cancelScheduledDragPreview()
     setActiveTask(null)
+    setDragPlaceholderMinHeight(undefined)
     setDeleteArmedIfChanged(false)
 
     const dragStartTasks = dragStartTasksRef.current
@@ -925,6 +965,7 @@ export function KanbanBoard({
 
     cancelScheduledDragPreview()
     setActiveTask(null)
+    setDragPlaceholderMinHeight(undefined)
     setDeleteArmedIfChanged(false)
     const dragStartTasks = dragStartTasksRef.current ?? tasksRef.current
     const currentPreviewTasks = tasksRef.current
@@ -1186,6 +1227,7 @@ export function KanbanBoard({
         }}
       />
       
+      <div className="flex min-h-0 flex-1 flex-col">
       <DndContext
         sensors={sensors}
         collisionDetection={collisionDetectionStrategy}
@@ -1195,30 +1237,32 @@ export function KanbanBoard({
         onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
       >
-        <div
-          ref={boardScrollContainerRef}
-          data-tour-target="task-board"
-          className="flex min-h-0 flex-1 justify-start xl:justify-center gap-6 w-full pb-10 overflow-x-hidden md:overflow-x-auto min-viewport-p"
-        >
-          {COLUMNS.map((columnId) => (
-            <KanbanColumn
-              key={columnId}
-              columnId={columnId}
-              isActiveMobile={activeMobileTab === columnId}
-              tasks={tasks.filter((t) => t.status === columnId)}
-              isSelectionMode={isSelectionMode}
-              selectedTaskIds={selectedTaskIds}
-              deletingTaskIds={deletingTaskIds}
-              onTaskClick={handleTaskClick}
-            />
-          ))}
-        </div>
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div
+            ref={boardScrollContainerRef}
+            data-tour-target="task-board"
+            className="grid min-h-0 flex-1 w-full grid-cols-1 gap-6 pb-10 overflow-x-hidden md:grid-cols-3 md:items-stretch md:gap-6 md:overflow-x-auto min-viewport-p xl:mx-auto xl:max-w-[calc(3*20rem+3rem)]"
+          >
+            {COLUMNS.map((columnId) => (
+              <KanbanColumn
+                key={columnId}
+                columnId={columnId}
+                isActiveMobile={activeMobileTab === columnId}
+                tasks={tasks.filter((t) => t.status === columnId)}
+                isSelectionMode={isSelectionMode}
+                selectedTaskIds={selectedTaskIds}
+                deletingTaskIds={deletingTaskIds}
+                dragPlaceholderByTaskId={dragPlaceholderByTaskId}
+                onTaskClick={handleTaskClick}
+              />
+            ))}
+          </div>
 
-        <DragOverlay dropAnimation={null}>
-          {activeTask && !isSelectionMode ? <TaskCard task={activeTask} isOverlay /> : null}
-        </DragOverlay>
+          <DragOverlay dropAnimation={null}>
+            {activeTask && !isSelectionMode ? <TaskCard task={activeTask} isOverlay /> : null}
+          </DragOverlay>
 
-        <AnimatePresence mode="wait">
+          <AnimatePresence mode="wait">
           {shouldShowActionPill ? (
             <motion.div
               key="action-pill"
@@ -1309,7 +1353,9 @@ export function KanbanBoard({
             </motion.div>
           ) : null}
         </AnimatePresence>
+        </div>
       </DndContext>
+      </div>
 
       <button
         ref={abyssCtaButtonRef}

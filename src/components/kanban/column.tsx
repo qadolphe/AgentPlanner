@@ -14,6 +14,8 @@ type ColumnProps = {
   deletingTaskIds?: Set<string>
   onTaskClick?: (task: TaskWithTags) => void
   isActiveMobile?: boolean
+  /** Passed to the card that is currently being dragged (sortable placeholder height). */
+  dragPlaceholderByTaskId?: Map<string, number>
 }
 
 const COLUMN_TITLES: Record<TaskStatus, string> = {
@@ -30,6 +32,7 @@ export function KanbanColumn({
   deletingTaskIds = new Set<string>(),
   onTaskClick,
   isActiveMobile = true,
+  dragPlaceholderByTaskId,
 }: ColumnProps) {
   const taskIds = useMemo(() => tasks.map((t) => t.id), [tasks])
 
@@ -46,7 +49,7 @@ export function KanbanColumn({
     <div
       data-board-column={columnId}
       data-tour-target={columnId === 'done' ? 'completion-signals' : undefined}
-      className={`flex-col bg-muted/30 border border-border rounded-lg w-full md:w-80 h-full overflow-hidden shrink-0 transition-colors ${
+      className={`flex-col bg-muted/30 border border-border rounded-lg w-full md:w-80 h-full min-h-0 overflow-hidden shrink-0 transition-colors ${
         isActiveMobile ? 'flex' : 'hidden md:flex'
       }`}
       ref={setNodeRef}
@@ -60,19 +63,23 @@ export function KanbanColumn({
         </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-3 min-h-[150px]">
-        <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
-          {tasks.map((task) => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              isSelected={selectedTaskIds.has(task.id)}
-              isDeleting={deletingTaskIds.has(task.id)}
-              isSelectionMode={isSelectionMode}
-              onClick={onTaskClick}
-            />
-          ))}
-        </SortableContext>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+          <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
+            {tasks.map((task) => (
+              <TaskCard
+                key={task.id}
+                task={task}
+                dragPlaceholderMinHeight={dragPlaceholderByTaskId?.get(task.id)}
+                isSelected={selectedTaskIds.has(task.id)}
+                isDeleting={deletingTaskIds.has(task.id)}
+                isSelectionMode={isSelectionMode}
+                onClick={onTaskClick}
+              />
+            ))}
+          </SortableContext>
+          <div className="min-h-8 flex-1 shrink-0" aria-hidden />
+        </div>
       </div>
     </div>
   )

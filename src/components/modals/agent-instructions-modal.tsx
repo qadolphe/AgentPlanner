@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { BookOpen, FilePenLine, FilePlus2, FileText, Save, Shield, Trash2, X } from 'lucide-react'
+import { BookOpen, ChevronDown, FilePenLine, FilePlus2, FileText, Save, Shield, Trash2, X } from 'lucide-react'
 import { SYNC_TARGET_LOGOS } from '@/components/brand/client-logos'
 import { createClient } from '@/lib/supabase/client'
 import {
@@ -179,6 +179,8 @@ export function AgentInstructionsModal({
   const [routingDescription, setRoutingDescription] = useState('')
   const [routingGlobs, setRoutingGlobs] = useState('')
   const [editingFileId, setEditingFileId] = useState<string | null>(null)
+
+  const [routingPanelExpanded, setRoutingPanelExpanded] = useState(false)
 
   const [allowTaskCompletion, setAllowTaskCompletion] = useState(true)
   const [toolToggles, setToolToggles] = useState<ToolToggleMap>(getDefaultToolToggles())
@@ -361,6 +363,10 @@ export function AgentInstructionsModal({
   }, [contextFiles, isGlobalTab, ruleFiles, selectedFileId, selectedSet])
 
   useEffect(() => {
+    setRoutingPanelExpanded(false)
+  }, [selectedFileId])
+
+  useEffect(() => {
     if (!selectedFile) {
       setDraftContent('')
       setDraftTitle('')
@@ -490,6 +496,29 @@ export function AgentInstructionsModal({
     } finally {
       setIsInstructionLoading(false)
     }
+  }
+
+  const commitRenameOnBlur = async () => {
+    if (!selectedFile || isGlobalTab || editingFileId !== selectedFile.id) {
+      return
+    }
+
+    const fallbackTitle = buildInstructionTitle(getInstructionFileLabel(selectedFile))
+    const parsed = parseInstructionRoutingDocument(selectedFile.content, {
+      defaultTitle: fallbackTitle,
+      defaultDescription: buildDefaultInstructionDescription(fallbackTitle),
+    })
+
+    if (draftTitle.trim() === parsed.config.title.trim()) {
+      return
+    }
+
+    if (!draftTitle.trim()) {
+      setDraftTitle(parsed.config.title)
+      return
+    }
+
+    await handleSaveFile()
   }
 
   const handleAddContextDocument = async () => {
@@ -747,15 +776,26 @@ export function AgentInstructionsModal({
                                   <input
                                     value={draftTitle}
                                     onChange={(event) => setDraftTitle(event.target.value)}
-                                    onBlur={() => setEditingFileId(null)}
+                                    onBlur={() => {
+                                      void commitRenameOnBlur().finally(() => setEditingFileId(null))
+                                    }}
                                     onKeyDown={(event) => {
                                       if (event.key === 'Enter') {
                                         event.preventDefault()
-                                        setEditingFileId(null)
+                                        void commitRenameOnBlur().finally(() => setEditingFileId(null))
                                       }
 
                                       if (event.key === 'Escape') {
                                         event.preventDefault()
+                                        const fallbackTitle = buildInstructionTitle(
+                                          getInstructionFileLabel(file)
+                                        )
+                                        const parsed = parseInstructionRoutingDocument(file.content, {
+                                          defaultTitle: fallbackTitle,
+                                          defaultDescription:
+                                            buildDefaultInstructionDescription(fallbackTitle),
+                                        })
+                                        setDraftTitle(parsed.config.title)
                                         setEditingFileId(null)
                                       }
                                     }}
@@ -806,10 +846,10 @@ export function AgentInstructionsModal({
               </div>
 
               <div className="flex min-h-0 flex-1 flex-col">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-4 shrink-0">
-                  <div className="flex items-center gap-2.5 text-foreground">
-                    <CurrentInstructionIcon className="h-5 w-5 text-primary" />
-                    <div>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-3 shrink-0">
+                  <div className="flex min-w-0 flex-1 items-center gap-2.5 text-foreground">
+                    <CurrentInstructionIcon className="h-5 w-5 shrink-0 text-primary" />
+                    <div className="min-w-0">
                       <h3 className="font-semibold text-slate-800">{currentInstructionTitle}</h3>
                       <p className="hidden text-xs text-slate-500 sm:block">
                         {currentInstructionDescription}
@@ -817,86 +857,97 @@ export function AgentInstructionsModal({
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handleSaveAll}
-                    disabled={
-                      (!selectedFile && !controlsDirty) || isInstructionLoading || isControlsSaving
-                    }
-                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground shadow-sm transition-all hover:bg-primary/90 hover:shadow disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:shadow-none"
-                  >
-                    <Save className="h-4 w-4" />{' '}
-                    {isInstructionLoading || isControlsSaving ? 'Saving...' : 'Save Settings'}
-                  </button>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    {!isGlobalTab && selectedFile ? (
+                      <button
+                        type="button"
+                        onClick={() => setRoutingPanelExpanded((open) => !open)}
+                        className="inline-flex max-w-[14rem] items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary transition-colors hover:bg-primary/20"
+                        aria-expanded={routingPanelExpanded}
+                      >
+                        <span className="truncate">
+                          When:{' '}
+                          {ROUTING_MODE_OPTIONS.find((option) => option.id === routingMode)?.label ??
+                            'Always'}
+                        </span>
+                        <ChevronDown
+                          className={`h-3.5 w-3.5 shrink-0 transition-transform ${
+                            routingPanelExpanded ? 'rotate-180' : ''
+                          }`}
+                        />
+                      </button>
+                    ) : null}
+
+                    <button
+                      type="button"
+                      onClick={handleSaveAll}
+                      disabled={
+                        (!selectedFile && !controlsDirty) || isInstructionLoading || isControlsSaving
+                      }
+                      className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground shadow-sm transition-all hover:bg-primary/90 hover:shadow disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:shadow-none"
+                    >
+                      <Save className="h-4 w-4" />{' '}
+                      {isInstructionLoading || isControlsSaving ? 'Saving...' : 'Save Settings'}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex min-h-0 flex-1 flex-col bg-slate-50 p-4">
                   {selectedFile ? (
                     <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                      {!isGlobalTab ? (
-                        <div className="border-b border-slate-200 bg-slate-50/70 px-4 py-3">
-                          <div className="mt-4 rounded-lg border border-pink-200/70 bg-pink-50/60 p-3">
-                            <div className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                              When Should This Apply?
-                            </div>
-                            <p className="mt-1 text-xs leading-5 text-slate-500">
-                              Pink Sundew uses this once and translates it into the best supported
-                              format for each connected environment.
-                            </p>
-
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              {ROUTING_MODE_OPTIONS.map((option) => (
-                                <button
-                                  key={option.id}
-                                  type="button"
-                                  onClick={() => setRoutingMode(option.id)}
-                                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
-                                    routingMode === option.id
-                                      ? 'border-primary bg-white text-primary shadow-sm'
-                                      : 'border-pink-200 bg-white/70 text-slate-600 hover:border-primary/30 hover:text-slate-800'
-                                  }`}
-                                >
-                                  {option.label}
-                                </button>
-                              ))}
-                            </div>
-
-                            <p className="mt-2 text-xs text-slate-500">
-                              {ROUTING_MODE_OPTIONS.find((option) => option.id === routingMode)
-                                ?.description ?? ''}
-                            </p>
-
-                            {routingMode === 'agent-decides' ? (
-                              <div className="mt-3">
-                                <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                                  When Should Agents Pull This In?
-                                </label>
-                                <input
-                                  value={routingDescription}
-                                  onChange={(event) => setRoutingDescription(event.target.value)}
-                                  placeholder={buildDefaultInstructionDescription(draftTitle)}
-                                  className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-primary"
-                                />
-                              </div>
-                            ) : null}
-
-                            {routingMode === 'match-files' ? (
-                              <div className="mt-3">
-                                <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                                  File Globs
-                                </label>
-                                <input
-                                  value={routingGlobs}
-                                  onChange={(event) => setRoutingGlobs(event.target.value)}
-                                  placeholder="src/**/*.ts,src/**/*.tsx"
-                                  className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:border-primary"
-                                />
-                                <p className="mt-1 text-[11px] leading-5 text-slate-500">
-                                  Separate multiple patterns with commas.
-                                </p>
-                              </div>
-                            ) : null}
+                      {!isGlobalTab && selectedFile && routingPanelExpanded ? (
+                        <div className="shrink-0 border-b border-slate-200 bg-slate-50/80 px-4 py-2">
+                          <div className="flex flex-wrap gap-2">
+                            {ROUTING_MODE_OPTIONS.map((option) => (
+                              <button
+                                key={option.id}
+                                type="button"
+                                onClick={() => setRoutingMode(option.id)}
+                                className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                                  routingMode === option.id
+                                    ? 'border-primary bg-white text-primary shadow-sm'
+                                    : 'border-slate-200 bg-white/80 text-slate-600 hover:border-primary/30'
+                                }`}
+                              >
+                                {option.label}
+                              </button>
+                            ))}
                           </div>
+                          <p className="mt-1.5 text-[11px] leading-snug text-slate-500">
+                            {ROUTING_MODE_OPTIONS.find((option) => option.id === routingMode)
+                              ?.description ?? ''}
+                          </p>
+
+                          {routingMode === 'agent-decides' ? (
+                            <div className="mt-2">
+                              <label className="mb-0.5 block text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                                When agents pull this in
+                              </label>
+                              <input
+                                value={routingDescription}
+                                onChange={(event) => setRoutingDescription(event.target.value)}
+                                placeholder={buildDefaultInstructionDescription(draftTitle)}
+                                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 outline-none transition-colors focus:border-primary"
+                              />
+                            </div>
+                          ) : null}
+
+                          {routingMode === 'match-files' ? (
+                            <div className="mt-2">
+                              <label className="mb-0.5 block text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                                File globs
+                              </label>
+                              <input
+                                value={routingGlobs}
+                                onChange={(event) => setRoutingGlobs(event.target.value)}
+                                placeholder="src/**/*.ts,src/**/*.tsx"
+                                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 outline-none transition-colors focus:border-primary"
+                              />
+                              <p className="mt-0.5 text-[10px] text-slate-500">
+                                Separate multiple patterns with commas.
+                              </p>
+                            </div>
+                          ) : null}
                         </div>
                       ) : null}
                       <div className="flex min-h-0 flex-1 overflow-hidden">

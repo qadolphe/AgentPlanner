@@ -482,10 +482,14 @@ fn resolve_codex_config_path() -> Result<PathBuf> {
 }
 
 fn resolve_windsurf_config_path() -> Result<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow!("Unable to determine Windsurf config location. Provide --file explicitly."))?;
+    let home = dirs::home_dir().ok_or_else(|| {
+        anyhow!("Unable to determine Windsurf config location. Provide --file explicitly.")
+    })?;
 
-    Ok(home.join(".codeium").join("windsurf").join("mcp_config.json"))
+    Ok(home
+        .join(".codeium")
+        .join("windsurf")
+        .join("mcp_config.json"))
 }
 
 fn resolve_command_tuple() -> Result<CommandTuple> {
