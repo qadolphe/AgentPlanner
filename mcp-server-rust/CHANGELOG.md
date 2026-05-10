@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0](https://github.com/pinksundew/pinksundew/compare/v2.5.0...v2.6.0) - 2026-05-10
+
+### Added
+
+- add support for Windsurf integration and refactor instruction handling
+- update cursor rule syncing and management
+
+### Other
+
+- optimize instruction title extraction logic
+- update synchronization timestamps and improve Kanban board functionality
+
 ## [2.5.0](https://github.com/pinksundew/pinksundew/compare/v2.4.0...v2.5.0) - 2026-04-20
 
 ### Added
